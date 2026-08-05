@@ -1,26 +1,10 @@
-use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
+//! Data models for the application.
+//!
+//! This module defines the domain structs used throughout the crate:
+//! the `Task` entity stored in SQLite, and the request DTOs for
+//! creating and updating tasks. All types derive `Serialize`/`Deserialize`
+//! so they can be used directly as API request/response bodies.
 
-/// 数据库存储结构，同时也是 API 返回给前端的数据结构。
-/// `rename_all` 让 JSON 使用前端惯用的 camelCase，而数据库字段仍保持 snake_case。
-#[derive(Debug, Serialize, FromRow)]
-#[serde(rename_all = "camelCase")]
-pub struct Task {
-    pub id: String,
-    pub title: String,
-    pub completed: bool,
-    pub created_at: String,
-}
+pub mod task;
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateTaskRequest {
-    pub title: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateTaskRequest {
-    pub title: Option<String>,
-    pub completed: Option<bool>,
-}
+pub use task::{CreateTaskRequest, Task, UpdateTaskRequest};

@@ -1,32 +1,40 @@
-mod db;
-mod models;
-mod routes;
+//! Axum + Tauri integration entry point.
+//!
+//! This is the crate root. It initializes the database, wires up the API
+//! router, starts the embedded HTTP server on a random localhost port, and
+//! hands control to Tauri's event loop. The port is stored in Tauri state so
+//! the Vue frontend can discover it via the `get_api_port` invoke command.
 
+pub(crate) mod api;
+pub(crate) mod db;
+pub(crate) mod models;
+
+use api::create_router;
+use api::AppState;
 use tauri::Manager;
 use tokio::net::TcpListener;
-use tower_http::cors::{Any, CorsLayer};
-use tracing_subscriber;
 
+/// Start the embedded Axum server and the Tauri app in the same process.
+///
+/// 1. Initialise the SQLite connection pool (and run migrations).
+/// 2. Bind an Axum router to a random localhost port.
+/// 3. Spawn the HTTP server on a background Tokio task.
+/// 4. Run the Tauri event loop, exposing `get_api_port` to the frontend.
+///
+/// The function never returns in the normal flow because `app.run()` blocks.
 #[tokio::main]
-/// 桌面程序的入口：先准备 API/数据库，再交给 Tauri 运行事件循环。
 pub async fn run() {
+    // Initialise structured logging (written to stdout/stderr).
     tracing_subscriber::fmt::init();
 
-    // 初始化数据库
+    // --- Database -----------------------------------------------------------
     let pool = db::init_pool()
         .await
         .expect("Failed to initialize SQLite database");
-    let state = routes::AppState { db: pool };
+    let state = AppState { db: pool };
 
-    // 创建 Axum 路由
-    let app = routes::create_router(state).layer(
-        CorsLayer::new()
-            .allow_origin(Any)
-            .allow_methods(Any)
-            .allow_headers(Any),
-    );
-
-    // 绑定到随机端口
+    // --- API server ---------------------------------------------------------
+    let app = create_router(state);
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("Failed to bind local API port");
@@ -36,27 +44,31 @@ pub async fn run() {
     println!("Axum server running on http://{}", addr);
     let port = addr.port();
 
-    // 在后台启动 Axum，同时运行 Tauri
     let axum_handle = tokio::spawn(async move {
         if let Err(error) = axum::serve(listener, app).await {
             tracing::error!(?error, "Axum server stopped unexpectedly");
         }
     });
-
-    // 启动 Tauri，并将端口传递给前端（通过环境变量或 Tauri 状态）
-    tauri::Builder::default()
+    // --- Tauri ------------------------------------------------------------
+    let context = tauri::generate_context!();
+    tauri::Builder::<tauri::Wry>::new()
         .invoke_handler(tauri::generate_handler![get_api_port])
         .setup(move |app| {
-            // 将端口保存到 App 的状态中，方便前端命令调用
             app.manage(port);
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
-
-    // 正常情况下不会到达这里，Tauri 会阻塞
+        .run(context)   // 确保 tauri.conf.json 存在且内容正确
+        .unwrap_or_else(|e| {              // 替换 expect，更灵活
+            panic!("error while running tauri application: {}", e);
+        });
+    // Abort the HTTP server (reached only if the Tauri event loop is
+    // artificially terminated, e.g. in tests).
     axum_handle.abort();
 }
+
+/// Return the port the embedded Axum server is listening on.
+///
+/// Called from the Vue frontend via `invoke("get_api_port")`.
 #[tauri::command]
 fn get_api_port(state: tauri::State<'_, u16>) -> u16 {
     *state
