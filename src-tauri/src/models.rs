@@ -5,6 +5,10 @@
 //! creating and updating tasks. All types derive `Serialize`/`Deserialize`
 //! so they can be used directly as API request/response bodies.
 
+pub mod note;
 pub mod task;
 
-pub use task::{CreateTaskRequest, Task, UpdateTaskRequest};
+pub use note::{CreateNoteRequest, Note, UpdateNoteRequest};
+pub use task::{
+    CreateTaskRequest, Task, TaskListResult, TaskQuery, UpdateTaskRequest,
+};
