@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Local SQLite database (should never be committed)
+src-tauri/data.db
+src-tauri/data.db-wal
+src-tauri/data.db-shm
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

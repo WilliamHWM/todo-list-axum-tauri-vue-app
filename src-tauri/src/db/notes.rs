@@ -1,16 +1,24 @@
+//! Note repository: all SQL statements for the `notes` table.
+
 use super::Pool;
 use crate::models::{CreateNoteRequest, Note, UpdateNoteRequest};
+use chrono::{SecondsFormat, Utc};
 use uuid::Uuid;
 
 /// Insert a new note and return it with its generated ID and timestamp.
+///
+/// The timestamp is generated in Rust via `chrono::Utc::now()` in RFC 3339
+/// format so the API transmits an unambiguous UTC instant.
 pub async fn create_note(pool: &Pool, req: CreateNoteRequest) -> Result<Note, sqlx::Error> {
+    let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     sqlx::query_as(
-        "INSERT INTO notes (id, task_id, content) VALUES (?, ?, ?) \
+        "INSERT INTO notes (id, task_id, content, created_at) VALUES (?, ?, ?, ?) \
          RETURNING id, task_id, content, created_at",
     )
     .bind(Uuid::new_v4().to_string())
     .bind(req.task_id)
     .bind(req.content)
+    .bind(now)
     .fetch_one(pool)
     .await
 }

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use validator::Validate;
 
 /// A single todo item persisted in the database.
 ///
@@ -17,9 +18,14 @@ pub struct Task {
 /// Request body for creating a new task.
 ///
 /// Only the `title` field is required; the server assigns the ID and timestamp.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateTaskRequest {
+    #[validate(length(
+        min = 1,
+        max = 120,
+        message = "任务标题必须是 1 到 120 个字符。"
+    ))]
     pub title: String,
 }
 
@@ -27,9 +33,14 @@ pub struct CreateTaskRequest {
 ///
 /// Both fields are optional — the server uses `COALESCE` so only supplied
 /// fields are overwritten.
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Clone, Default, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateTaskRequest {
+    #[validate(length(
+        min = 1,
+        max = 120,
+        message = "任务标题必须是 1 到 120 个字符。"
+    ))]
     pub title: Option<String>,
     pub completed: Option<bool>,
 }

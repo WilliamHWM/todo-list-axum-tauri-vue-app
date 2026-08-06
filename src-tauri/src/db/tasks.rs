@@ -1,30 +1,11 @@
+//! Task repository: all SQL statements for the `tasks` table.
+
 use super::Pool;
 use crate::models::{CreateTaskRequest, Task, TaskListResult, TaskQuery, UpdateTaskRequest};
+use chrono::{SecondsFormat, Utc};
 use sqlx::query_builder::QueryBuilder;
 use sqlx::Sqlite;
 use uuid::Uuid;
-
-/// Establish a connection pool and apply all pending migrations.
-///
-/// The database file `data.db` is created in the current working directory if it
-/// does not exist. `001_init.sql` is embedded at compile time via
-/// `include_str!`.
-pub async fn init_pool() -> Result<Pool, sqlx::Error> {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect("sqlite:data.db?mode=rwc")
-        .await?;
-
-    sqlx::query(include_str!("../../migrations/001_init.sql"))
-        .execute(&pool)
-        .await?;
-
-    sqlx::query(include_str!("../../migrations/002_notes.sql"))
-        .execute(&pool)
-        .await?;
-
-    Ok(pool)
-}
 
 /// Append the optional WHERE conditions from `q` to a query builder.
 ///
@@ -84,14 +65,19 @@ pub async fn search_tasks(pool: &Pool, q: TaskQuery) -> Result<TaskListResult, s
 
 /// Insert a new task and return it with its generated ID and timestamp.
 ///
-/// The `created_at` default is handled by SQLite (`datetime('now')`), and the
-/// `RETURNING` clause ensures the Rust side reads the same value the DB wrote.
+/// The timestamp is generated in Rust via `chrono::Utc::now()` and written in
+/// RFC 3339 format (e.g. `2026-08-06T07:30:00.123456Z`) so the API always
+/// transmits an unambiguous UTC instant. The `RETURNING` clause ensures the
+/// Rust side reads back the exact value that was written.
 pub async fn create_task(pool: &Pool, req: CreateTaskRequest) -> Result<Task, sqlx::Error> {
+    let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     sqlx::query_as(
-        "INSERT INTO tasks (id, title) VALUES (?, ?) RETURNING id, title, completed, created_at",
+        "INSERT INTO tasks (id, title, created_at) VALUES (?, ?, ?) \
+         RETURNING id, title, completed, created_at",
     )
     .bind(Uuid::new_v4().to_string())
     .bind(req.title)
+    .bind(now)
     .fetch_one(pool)
     .await
 }

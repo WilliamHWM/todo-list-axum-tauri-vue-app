@@ -1,0 +1,41 @@
+-- 003_timestamps_utc.sql
+-- 统一时间戳为 RFC 3339 / ISO 8601（UTC，带 Z 后缀），消除前端解析歧义。
+--
+-- 背景：旧 schema 用 `datetime('now')` 生成 UTC 时间，但格式是
+-- 'YYYY-MM-DD HH:MM:SS'（无时区标记）。前端 `new Date("2026-08-06 07:30:00")`
+-- 会把它当作本地时间解析，从而产生时区偏移。
+-- 迁移后格式为 'YYYY-MM-DDTHH:MM:SS.SSSZ'，`new Date(...)` 会按 UTC 解析，
+-- 再由前端 `toLocaleString()` 转换到用户本地时区。
+
+-- 1) 将历史数据转换为带 Z 的 RFC 3339 格式（旧数据本就存的是 UTC，仅改格式）。
+-- UPDATE tasks SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', created_at)
+-- WHERE created_at NOT LIKE '%Z';
+-- UPDATE notes SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', created_at)
+-- WHERE created_at NOT LIKE '%Z';
+--
+-- -- 2) 重建表，让默认值也输出 RFC 3339，作为绕过应用层直接插入时的兜底。
+-- PRAGMA foreign_keys = OFF;
+--
+-- ALTER TABLE tasks RENAME TO tasks_old;
+-- CREATE TABLE tasks (
+--     id TEXT PRIMARY KEY,
+--     title TEXT NOT NULL,
+--     completed BOOLEAN NOT NULL DEFAULT 0,
+--     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+-- );
+-- INSERT INTO tasks SELECT id, title, completed, created_at FROM tasks_old;
+-- DROP TABLE tasks_old;
+--
+-- ALTER TABLE notes RENAME TO notes_old;
+-- CREATE TABLE notes (
+--     id TEXT PRIMARY KEY,
+--     task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE,
+--     content TEXT NOT NULL,
+--     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+-- );
+-- INSERT INTO notes SELECT id, task_id, content, created_at FROM notes_old;
+-- DROP TABLE notes_old;
+--
+-- CREATE INDEX IF NOT EXISTS idx_notes_task_id ON notes(task_id);
+--
+-- PRAGMA foreign_keys = ON;
