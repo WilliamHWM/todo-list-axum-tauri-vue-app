@@ -1,7 +1,7 @@
 //! 应用级（非 HTTP）错误。
 //!
 //! 用于启动/基础设施失败，如配置加载、连接池创建、数据库迁移。HTTP 面向的错误
-//! 在表现层 [`crate::presentation::error`]。
+//! 在北向网关 [`crate::north::error`]。
 
 /// 组合根 / 基础设施层使用的通用错误。
 #[derive(Debug, thiserror::Error)]

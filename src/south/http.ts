@@ -9,7 +9,7 @@
  * 后端所有 2xx 响应都是 `{ code, message, data }` 信封；错误响应为
  * `{ code, message }`。这里的请求/响应拦截器负责拆信封、抛规范化异常。
  *
- * 本文件属于基础设施层，业务代码不应直接引用；应通过仓储端口访问。
+ * 本文件属于南向网关，业务代码不应直接引用；应通过仓储端口访问。
  */
 
 import axios, { type AxiosError, type AxiosRequestConfig } from "axios";

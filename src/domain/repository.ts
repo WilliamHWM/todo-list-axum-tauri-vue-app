@@ -1,8 +1,8 @@
 /**
- * 仓储端口：领域层定义接口，基础设施层实现。
+ * 仓储端口（南向端口）：领域层定义接口，南向网关实现。
  *
  * 应用层（Pinia store）只面向这里的接口编程；具体 HTTP 实现位于
- * `infrastructure/`，由组合根注入。
+ * `south/`，由组合根注入。
  */
 
 import type { Task } from "./task";

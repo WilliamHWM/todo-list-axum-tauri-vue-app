@@ -1,22 +1,27 @@
-//! Axum + Tauri 组合根。
+//! Axum + Tauri 组合根（菱形架构装配）。
 //!
-//! 按 DDD 分层组装：`shared`（跨层约定）→ `infrastructure`（连接池 + 仓储实现）
-//! → `application`（用例服务）→ `presentation`（Axum 路由）。本文件只负责把各层
-//! 装配起来，不包含业务逻辑。
+//! 装配顺序：`shared`（跨层约定）→ `south`（南向网关：连接池 + 仓储实现）
+//! → `application`（用例服务，实现北向端口）→ `north`（北向网关：Axum 路由）。
+//! 本文件只负责把各层装配起来，不包含业务逻辑。
+//!
+//! 菱形架构约定：
+//! - 领域核心居中（domain + application）；`application/ports.rs` 定义北向端口。
+//! - `north/`（北向网关）只依赖北向端口接口，不依赖具体服务实现。
+//! - `south/`（南向网关）实现领域层定义的仓储端口，SQL 只出现在这里。
 //!
 //! Boot order:
 //! 1. 初始化 tracing（可选 JSON 输出）。
 //! 2. 从环境变量加载 `AppConfig`。
-//! 3. 打开 SQLite 连接池并应用迁移（infrastructure）。
-//! 4. 构造应用层服务并注入仓储适配器（application + infrastructure）。
-//! 5. 绑定 Axum 到随机回环端口，后台任务托管 HTTP 服务。
+//! 3. 打开 SQLite 连接池并应用迁移（south）。
+//! 4. 构造应用层服务并注入南向适配器（application + south）。
+//! 5. 绑定 Axum 到随机回环端口，后台任务托管 HTTP 服务（north）。
 //! 6. 交给 Tauri 事件循环；端口存入 Tauri 状态，前端通过 `get_api_port` 发现。
 
 mod application;
 mod domain;
-mod infrastructure;
-mod presentation;
+mod north;
 mod shared;
+mod south;
 
 use std::sync::Arc;
 use tauri::Manager;
@@ -36,23 +41,27 @@ pub async fn run() {
         "application configuration loaded"
     );
 
-    // --- 基础设施：连接池 + 迁移 ----------------------------------------------
-    let pool = infrastructure::db::init_pool(&config).await.unwrap_or_else(|e| {
+    // --- 南向网关：连接池 + 迁移 ----------------------------------------------
+    let pool = south::db::init_pool(&config).await.unwrap_or_else(|e| {
         panic!("failed to initialize SQLite database: {e}");
     });
     tracing::info!("database pool initialized and migrations applied");
 
-    // --- 装配：仓储实现 → 应用层服务 → 表现层状态 -------------------------------
-    let task_repo = Arc::new(infrastructure::SqlxTaskRepository::new(pool.clone()));
-    let note_repo = Arc::new(infrastructure::SqlxNoteRepository::new(pool));
-    let state = presentation::AppState {
-        tasks: application::TaskService::new(task_repo),
-        notes: application::NoteService::new(note_repo),
+    // --- 装配：南向适配器 → 用例服务（北向端口实现）→ 北向网关状态 -----------------
+    let task_repo = Arc::new(south::SqlxTaskRepository::new(pool.clone()));
+    let note_repo = Arc::new(south::SqlxNoteRepository::new(pool));
+    let tasks: Arc<dyn application::TaskUseCase> =
+        Arc::new(application::TaskService::new(task_repo));
+    let notes: Arc<dyn application::NoteUseCase> =
+        Arc::new(application::NoteService::new(note_repo));
+    let state = north::AppState {
+        tasks,
+        notes,
         config: config.clone(),
     };
 
-    // --- API 服务器 -----------------------------------------------------------
-    let app = presentation::create_router(state);
+    // --- API 服务器（北向网关）-------------------------------------------------
+    let app = north::create_router(state);
     let listener = TcpListener::bind((config.host.as_str(), config.port))
         .await
         .unwrap_or_else(|e| panic!("failed to bind local API port: {e}"));

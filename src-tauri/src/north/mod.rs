@@ -1,6 +1,7 @@
-//! 表现层：HTTP 入口、路由、中间件与共享状态。
+//! 北向网关：HTTP 入口、路由、中间件与共享状态。
 //!
-//! 本层只做"翻译"：HTTP 请求 → DTO → 调用应用层服务 → 响应。不包含业务规则。
+//! 本层只做"翻译"：HTTP 请求 → DTO → 调用北向端口（`TaskUseCase`/`NoteUseCase`）
+//! → 响应。只依赖应用层接口，不包含业务规则，也不直接依赖南向实现。
 
 pub mod error;
 pub mod extract;
@@ -10,32 +11,35 @@ pub mod routes;
 
 pub use routes::create_router;
 
-use crate::application::{NoteService, TaskService};
+use crate::application::{NoteUseCase, TaskUseCase};
 use crate::shared::AppConfig;
+use std::sync::Arc;
 
-/// Axum 路由共享状态：应用层服务 + 跨层配置。
+/// Axum 路由共享状态：北向端口 + 跨层配置。
+///
+/// 字段类型为 `Arc<dyn TaskUseCase>` / `Arc<dyn NoteUseCase>`，即北向网关只面向
+/// 应用层接口，具体服务实现由组合根注入，可替换、可 mock。
 #[derive(Clone)]
 pub struct AppState {
-    pub tasks: TaskService,
-    pub notes: NoteService,
+    pub tasks: Arc<dyn TaskUseCase>,
+    pub notes: Arc<dyn NoteUseCase>,
     pub config: AppConfig,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::db::init_pool;
-    use crate::infrastructure::{SqlxNoteRepository, SqlxTaskRepository};
+    use crate::south::db::init_pool;
+    use crate::south::{SqlxNoteRepository, SqlxTaskRepository};
     use axum::{
         body::{to_bytes, Body},
         http::{Request, StatusCode},
     };
     use serde_json::Value;
-    use std::sync::Arc;
     use tower::ServiceExt;
     use uuid::Uuid;
 
-    /// 用唯一临时库构建测试状态：真实 sqlx 仓储 + 应用层服务。
+    /// 用唯一临时库构建测试状态：真实 sqlx 仓储 + 应用层服务（经北向端口注入）。
     async fn test_state() -> AppState {
         let db_path = std::env::temp_dir().join(format!("axum_api_test_{}.db", Uuid::new_v4()));
         let config = AppConfig {
@@ -48,8 +52,12 @@ mod tests {
             db_max_connections: 5,
         };
         let pool = init_pool(&config).await.expect("init_pool failed");
-        let tasks = TaskService::new(Arc::new(SqlxTaskRepository::new(pool.clone())));
-        let notes = NoteService::new(Arc::new(SqlxNoteRepository::new(pool)));
+        let tasks: Arc<dyn TaskUseCase> = Arc::new(crate::application::TaskService::new(Arc::new(
+            SqlxTaskRepository::new(pool.clone()),
+        )));
+        let notes: Arc<dyn NoteUseCase> = Arc::new(crate::application::NoteService::new(Arc::new(
+            SqlxNoteRepository::new(pool),
+        )));
         AppState {
             tasks,
             notes,

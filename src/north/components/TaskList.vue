@@ -3,7 +3,7 @@ import { computed, onMounted } from "vue";
 import { Search } from "@element-plus/icons-vue";
 import { useTasksStore } from "@/shared/di";
 import { formatDateTime } from "@/shared/format";
-import NotesPanel from "@/presentation/components/NotesPanel.vue";
+import NotesPanel from "@/north/components/NotesPanel.vue";
 import type { TaskFilter } from "@/domain/task";
 
 const store = useTasksStore();

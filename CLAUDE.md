@@ -38,27 +38,31 @@ Single-process desktop application combining:
 - **Vue 3 + TypeScript**: frontend UI (Pinia + Vue Router + Element Plus)
 - **SQLite + SQLx**: local persistent storage (WAL mode, `sqlx::migrate!`)
 
-The whole codebase (frontend and backend) follows **DDD five layers** with the same
-philosophy on both sides: `domain` → `application` → `infrastructure` / `presentation` + `shared`.
+The whole codebase (frontend and backend) follows a **diamond (hexagonal) architecture**:
+a domain core (`domain` + `application`) in the middle, a **north gateway** (`north/`)
+for inputs and a **south gateway** (`south/`) for outputs, plus `shared/` for
+cross-cutting concerns.
 
-### DDD Layer Mapping
+### Diamond (north-south) Layer Mapping
 
 | Layer | Rust (`src-tauri/src/`) | Frontend (`src/`) | Responsibility |
 |-------|--------------------------|-------------------|----------------|
-| **domain** | `domain/` — entities (`Task`/`Note` with `new`/`update` invariants), repository trait ports (`TaskRepository`/`NoteRepository`), `DomainError`, `RepoError` | `domain/` — entity interfaces, repository interfaces, `validateTaskTitle`/`validateNoteContent` | Business invariants; no framework/HTTP/SQL knowledge |
-| **application** | `application/` — `TaskService`/`NoteService` (use cases), DTOs, `ServiceError` | `application/` — Pinia store factories `createTasksStore(repo)`/`createNotesStore(repo)` | Use-case orchestration; depends only on domain ports via DI |
-| **infrastructure** | `infrastructure/` — sqlx pool + migration, `SqlxTaskRepository`/`SqlxNoteRepository` | `infrastructure/` — axios (`http.ts`), `HttpTaskRepository`/`HttpNoteRepository` | Implements domain ports; all SQL / HTTP details live here |
-| **presentation** | `presentation/` — axum handlers, routes, middleware, `ApiError`/`ApiResponse`/`JsonBody`, `AppState` | `presentation/` — router, `App.vue`, views, components | HTTP / UI translation only; no business rules |
+| **domain** (core) | `domain/` — entities (`Task`/`Note` with `new`/`update` invariants), **south ports** `TaskRepository`/`NoteRepository` traits, `TaskQuery`/`TaskList`, `DomainError`, `RepoError` | `domain/` — entity interfaces, **south ports** repository interfaces, `validateTaskTitle`/`validateNoteContent` | Business invariants; no framework/HTTP/SQL knowledge |
+| **application** (core) | `application/` — use-case services + **north ports** `TaskUseCase`/`NoteUseCase` (`ports.rs`), DTOs, `ServiceError` | `application/` — Pinia store factories `createTasksStore(repo)`/`createNotesStore(repo)` | Use-case orchestration; depends only on domain south ports via DI, exposes north ports |
+| **south** (gateway) | `south/` — sqlx pool + migration, `SqlxTaskRepository`/`SqlxNoteRepository` | `south/` — axios (`http.ts`), `HttpTaskRepository`/`HttpNoteRepository` | Implements domain south ports; all SQL / HTTP details live here |
+| **north** (gateway) | `north/` — axum handlers, routes, middleware, `ApiError`/`ApiResponse`/`JsonBody`, `AppState` (holds `Arc<dyn TaskUseCase>`/`Arc<dyn NoteUseCase>`) | `north/` — router, `App.vue`, views, components | HTTP / UI translation only; depends only on application north ports |
 | **shared** | `shared/` — `config.rs`, `time.rs`, `error.rs` | `shared/` — `di.ts` (frontend composition root), `format.ts` | Cross-cutting concerns any layer may use |
 
 Key conventions:
 
 - **Composition roots**: backend `src-tauri/src/lib.rs`, frontend `src/shared/di.ts` — they
-  wire concrete infrastructure implementations into the domain ports consumed by the
-  application layer.
-- **Dependency direction**: `presentation → application → domain`; `infrastructure`
-  implements `domain`; `shared` is referenced by any layer but never depends downward on
-  business layers.
+  wire concrete south-gateway implementations into the domain ports consumed by the
+  application layer, and expose the resulting services behind north ports.
+- **North port**: `application::ports::TaskUseCase`/`NoteUseCase` — the north gateway
+  (`north/`) depends only on these interfaces, never on concrete services.
+- **Dependency direction**: `north → application → domain`; `south` implements `domain`
+  ports; `shared` is referenced by any layer but never depends downward on business
+  layers.
 - **No `validator` crate**: validation lives in the domain entities (`Task::new`,
   `Task::update`, `Note::new`, `Note::update`) via `try_*`-style constructors/actions.
   Frontend mirrors the same rules with `validateTaskTitle`/`validateNoteContent`.
@@ -66,13 +70,13 @@ Key conventions:
 ### Data Flow
 
 ```
-Vue 组件 → presentation → application (Pinia store) → domain 端口 (仓储接口)
-                                                            ↓ 组合根注入
-                                               infrastructure (axios) → /api
-                                                            ↓
-后端: presentation (axum handler) → application (service) → domain 端口 (trait)
-                                                            ↓ 组合根注入
-                                               infrastructure (sqlx) → SQLite
+Vue 组件 → north → application (Pinia store) → domain 南向端口 (仓储接口)
+                                                    ↓ 组合根注入
+                                         south (axios) → /api
+                                                    ↓
+后端: north (axum handler) → application (service) → domain 南向端口 (trait)
+                                                    ↓ 组合根注入
+                                         south (sqlx) → SQLite
 ```
 
 Key insight: Axum binds to a random local port (`127.0.0.1:0`), Tauri captures the port as state, and Vue resolves it via `invoke("get_api_port")` to build the API base URL. No hardcoded ports, no CORS issues (both run on localhost).
@@ -103,23 +107,23 @@ Key insight: Axum binds to a random local port (`127.0.0.1:0`), Tauri captures t
 | Frontend | `src/shared/format.ts` | UTC → local time formatting (dayjs) |
 | Frontend | `src/domain/` | Entities (`task.ts`/`note.ts` + validators), repository interfaces (`repository.ts`) |
 | Frontend | `src/application/tasks.ts`, `notes.ts` | Pinia store factories: all list/CRUD use-case logic |
-| Frontend | `src/infrastructure/http.ts` | axios instance, port discovery, envelope unwrap, `ApiError` |
-| Frontend | `src/infrastructure/task-repository.ts`, `note-repository.ts` | HTTP adapters implementing domain ports |
-| Frontend | `src/presentation/` | Router, `App.vue`, views, components (thin, call stores) |
+| Frontend | `src/south/http.ts` | axios instance, port discovery, envelope unwrap, `ApiError` |
+| Frontend | `src/south/task-repository.ts`, `note-repository.ts` | HTTP adapters implementing domain ports |
+| Frontend | `src/north/` | Router, `App.vue`, views, components (thin, call stores) |
 | Backend (Composition) | `src-tauri/src/lib.rs` | Boot: tracing → config → DB → wire repos/services → Axum → Tauri |
 | Backend (Shared) | `src-tauri/src/shared/` | `config.rs` (`APP_*` env), `time.rs` (UTC RFC3339), `error.rs` (`AppError`) |
-| Backend (Domain) | `src-tauri/src/domain/` | Entities (`task.rs`/`note.rs`), repository traits + `TaskQuery`/`TaskList`, `DomainError`/`RepoError` |
-| Backend (Application) | `src-tauri/src/application/` | `TaskService`/`NoteService` (use cases), DTOs, `ServiceError` |
-| Backend (Infrastructure) | `src-tauri/src/infrastructure/db/` | Pool init (WAL) + `sqlx::migrate!`, `SqlxTaskRepository`/`SqlxNoteRepository` |
-| Backend (Presentation) | `src-tauri/src/presentation/` | `AppState { tasks, notes, config }`, handlers, routes, `ApiError`/`ApiResponse`/`JsonBody` |
+| Backend (Domain) | `src-tauri/src/domain/` | Entities (`task.rs`/`note.rs`), south ports (`repository.rs`) + `TaskQuery`/`TaskList`, `DomainError`/`RepoError` |
+| Backend (Application) | `src-tauri/src/application/` | `TaskService`/`NoteService` (use cases), north ports (`ports.rs`), DTOs, `ServiceError` |
+| Backend (South) | `src-tauri/src/south/db/` | Pool init (WAL) + `sqlx::migrate!`, `SqlxTaskRepository`/`SqlxNoteRepository` |
+| Backend (North) | `src-tauri/src/north/` | `AppState { tasks: Arc<dyn TaskUseCase>, notes: Arc<dyn NoteUseCase>, config }`, handlers, routes, `ApiError`/`ApiResponse`/`JsonBody` |
 | Migrations | `src-tauri/migrations/` | Versioned SQL, tracked by `_sqlx_migrations` |
 | Config | `package.json`, `vite.config.ts` | Frontend scripts, `@` alias, vendor chunks |
 | Config | `src-tauri/Cargo.toml`, `tauri.conf.json` | Rust & Tauri config |
 
 ### Important Patterns
 
-- **Layering**: presentation → application → domain, with infrastructure implementing domain ports. Handlers never write SQL; repos never build HTTP responses; entities hold invariants.
-- **DI**: services hold `Arc<dyn TaskRepository>` / `Arc<dyn NoteRepository>` trait objects; tests inject the same sqlx adapters against a temp DB.
+- **Layering**: north → application → domain, with south implementing domain ports. Handlers never write SQL; repos never build HTTP responses; entities hold invariants.
+- **DI**: services hold `Arc<dyn TaskRepository>` / `Arc<dyn NoteRepository>` (south) trait objects; the north gateway holds `Arc<dyn TaskUseCase>` / `Arc<dyn NoteUseCase>` (north). Tests inject the same sqlx adapters against a temp DB.
 - **Validation**: domain entities enforce invariants in `new`/`update`; `JsonBody` maps JSON parse failures to 400 + envelope.
 - **CORS**: `tower_http::cors` allows any origin — safe, everything binds to `127.0.0.1` only.
 - **Request logging**: `TraceLayer` records method, URI, status, latency per request.

@@ -13,13 +13,13 @@ const routes: RouteRecordRaw[] = [
   {
     path: "/tasks",
     name: "tasks",
-    component: () => import("@/presentation/views/TasksView.vue"),
+    component: () => import("@/north/views/TasksView.vue"),
     meta: { title: "任务管理" },
   },
   {
     path: "/about",
     name: "about",
-    component: () => import("@/presentation/views/AboutView.vue"),
+    component: () => import("@/north/views/AboutView.vue"),
     meta: { title: "关于" },
   },
   {

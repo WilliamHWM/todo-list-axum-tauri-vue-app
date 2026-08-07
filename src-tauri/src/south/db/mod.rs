@@ -1,4 +1,4 @@
-//! SQLite 连接池与迁移。
+//! SQLite 连接池与迁移（南向网关实现细节）。
 
 pub mod note_repo;
 pub mod task_repo;

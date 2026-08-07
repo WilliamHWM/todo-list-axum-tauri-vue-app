@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import TaskForm from "@/presentation/components/TaskForm.vue";
-import TaskList from "@/presentation/components/TaskList.vue";
+import TaskForm from "@/north/components/TaskForm.vue";
+import TaskList from "@/north/components/TaskList.vue";
 </script>
 
 <template>

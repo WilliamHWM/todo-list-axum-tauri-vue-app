@@ -1,13 +1,13 @@
 /**
  * 前端组合根（依赖注入）。
  *
- * 在此把基础设施层实现（`HttpTaskRepository` / `HttpNoteRepository`）注入到
- * 应用层端口（`TaskRepository` / `NoteRepository`），产出可供表现层直接使用的
- * Pinia store hook。表现层与 store 均不直接依赖具体 HTTP 实现，便于替换与测试。
+ * 在此把南向网关实现（`HttpTaskRepository` / `HttpNoteRepository`）注入到
+ * 应用层端口（`TaskRepository` / `NoteRepository`），产出可供北向网关直接使用的
+ * Pinia store hook。北向组件与 store 均不直接依赖具体 HTTP 实现，便于替换与测试。
  */
 
-import { HttpTaskRepository } from "@/infrastructure/task-repository";
-import { HttpNoteRepository } from "@/infrastructure/note-repository";
+import { HttpTaskRepository } from "@/south/task-repository";
+import { HttpNoteRepository } from "@/south/note-repository";
 import { createTasksStore } from "@/application/tasks";
 import { createNotesStore } from "@/application/notes";
 

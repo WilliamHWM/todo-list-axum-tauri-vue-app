@@ -9,10 +9,9 @@ import { Monitor, Connection, Document, Coin } from "@element-plus/icons-vue";
     </template>
 
     <p>
-      这是一个 DDD 分层的桌面应用骨架，将 Tauri（桌面壳）、Axum（嵌入式 HTTP
+      这是一个菱形（六边形）架构的桌面应用骨架，将 Tauri（桌面壳）、Axum（嵌入式 HTTP
       服务）、Vue 3（前端 UI）与 SQLite（本地存储）组合在同一个进程中。前后端
-      统一采用 domain / application / infrastructure / presentation / shared
-      五层结构。
+      统一采用 domain / application / north / south / shared 结构。
     </p>
 
     <el-descriptions :column="1" border class="about-list">
@@ -26,7 +25,7 @@ import { Monitor, Connection, Document, Coin } from "@element-plus/icons-vue";
         Tauri 2（WebView 壳，Rust 运行时）
       </el-descriptions-item>
       <el-descriptions-item label="架构分层">
-        domain → application → infrastructure → presentation + shared（两端一致）
+        北向网关（north）→ application → domain → 南向网关（south）+ shared
       </el-descriptions-item>
       <el-descriptions-item label="时间约定">
         存储与传输统一 UTC（RFC 3339，带 Z），前端按本地时区渲染

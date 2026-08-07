@@ -1,6 +1,6 @@
-# Tauri + Axum + Vue 企业级桌面应用（DDD 分层）
+# Tauri + Axum + Vue 企业级桌面应用（菱形/六边形架构）
 
-一个企业级结构的桌面应用骨架：将 **Tauri 2**（桌面壳）、**Axum**（嵌入式 HTTP 服务）、**Vue 3 + TypeScript**（前端 UI）与 **SQLite + SQLx**（本地存储）组合在同一个进程内，前后端统一采用 **DDD 五层**（domain / application / infrastructure / presentation / shared）架构。
+一个企业级结构的桌面应用骨架：将 **Tauri 2**（桌面壳）、**Axum**（嵌入式 HTTP 服务）、**Vue 3 + TypeScript**（前端 UI）与 **SQLite + SQLx**（本地存储）组合在同一个进程内，前后端统一采用 **菱形架构**：领域核心（domain + application）居中，北向网关（north/ 输入）与南向网关（south/ 输出）分别接线，shared/ 承载跨层横切关注点。
 
 前端不直接访问数据库：通过 Tauri command 拿到 Axum 的随机本地端口，再经 axios 以统一信封契约访问 `/api`，最终由 SQLx 写入 SQLite。
 
@@ -13,30 +13,31 @@
 | 前端 | Vue 3 + TypeScript + Vite + Pinia + Vue Router + Element Plus |
 | 时间库 | chrono (Rust) / dayjs (前端) |
 
-## DDD 分层（前后端同构）
+## 菱形架构（前后端同构）
 
-| 层 | Rust（src-tauri/src） | 前端（src） | 职责 |
-|----|----------------------|-------------|------|
-| **domain** | `domain/`（实体 + 仓储 trait 端口 + `DomainError`） | `domain/`（实体 + 仓储接口 + 校验函数） | 业务不变量；不依赖框架，不关心 HTTP/SQL |
-| **application** | `application/`（`TaskService`/`NoteService` + DTO + `ServiceError`） | `application/`（Pinia store 工厂） | 用例编排；面向仓储端口编程，依赖注入 |
-| **infrastructure** | `infrastructure/`（sqlx 连接池 + 仓储实现） | `infrastructure/`（axios 实例 + HTTP 仓储实现） | 实现领域端口；所有 SQL / 网络细节只出现在这里 |
-| **presentation** | `presentation/`（axum handlers / 路由 / 中间件 / `ApiError`） | `presentation/`（router / views / components / App.vue） | HTTP 与 UI 翻译；不包含业务规则 |
+| 角色 | Rust（src-tauri/src） | 前端（src） | 职责 |
+|------|----------------------|-------------|------|
+| **domain**（核心） | `domain/`（实体 + 南向端口 trait + `DomainError`/`RepoError`） | `domain/`（实体 + 南向仓储接口 + 校验函数） | 业务不变量；不依赖框架，不关心 HTTP/SQL |
+| **application**（核心） | `application/`（用例服务 + 北向端口 `ports.rs` + DTO + `ServiceError`） | `application/`（Pinia store 工厂） | 用例编排；面向南向端口编程、暴露北向端口 |
+| **south**（南向网关） | `south/`（sqlx 连接池 + 仓储实现） | `south/`（axios 实例 + HTTP 仓储实现） | 实现领域南向端口；所有 SQL / 网络细节只出现在这里 |
+| **north**（北向网关） | `north/`（axum handlers / 路由 / 中间件 / `ApiError`，`AppState` 持 `Arc<dyn TaskUseCase>`） | `north/`（router / views / components / App.vue） | HTTP 与 UI 翻译；只依赖北向端口，不依赖具体服务 |
 | **shared** | `shared/`（config / time / AppError） | `shared/`（di 组合根 / format） | 跨层横切关注点 |
 
-关键约定：**组合根**（后端 `lib.rs`、前端 `shared/di.ts`）把基础设施实现注入到应用层端口；领域层定义不变量与端口，实现细节可替换、可测试（例如测试中注入内存仓储）。
+关键约定：**组合根**（后端 `lib.rs`、前端 `shared/di.ts`）把南向网关实现注入到领域端口，并把用例服务以 **北向端口**（`TaskUseCase`/`NoteUseCase`）暴露给北向网关。领域层定义不变量与端口，实现细节可替换、可测试（例如测试中注入内存仓储 / mock 北向端口）。
 
 ## 架构与数据流
 
 ```text
-Vue 组件 → presentation → application (Pinia store) → domain 端口 (仓储接口)
-                                                            ↓ 组合根注入
-                                               infrastructure (axios) → /api
-                                                            ↓
-后端: presentation (axum handler) → application (service) → domain 端口 (trait)
-                                                            ↓ 组合根注入
-                                               infrastructure (sqlx) → SQLite
+Vue 组件 → north → application (Pinia store) → domain 南向端口 (仓储接口)
+                                                    ↓ 组合根注入
+                                         south (axios) → /api
+                                                    ↓
+后端: north (axum handler) → application (service) → domain 南向端口 (trait)
+                                                    ↓ 组合根注入
+                                         south (sqlx) → SQLite
 ```
 
+- **北向端口**：`application::ports::TaskUseCase` / `NoteUseCase`，北向网关只依赖接口，服务实现可替换、可 mock。
 - **输入校验**：Rust 端移除 `validator` 声明式校验，业务不变量由领域实体在 `Task::new` / `Note::new` / `update` 中校验（标题 1–120 字符、笔记 1–5000 字符等）；前端 `domain/` 提供同名校验函数，两端规则一致。
 - **API 契约**：所有 2xx 响应统一为 `{ code, message, data }` 信封；错误响应为 `{ code, message }`。axios 拦截器负责拆信封与错误规范化。
 - **时间约定**：存储与传输统一 **UTC（RFC 3339，带 `Z`）**；前端用 dayjs 转本地时区展示，杜绝时区偏移。
@@ -44,25 +45,25 @@ Vue 组件 → presentation → application (Pinia store) → domain 端口 (仓
 ## 目录结构
 
 ```
-src/                          # 前端（DDD 五层）
-  application/                #   Pinia store 工厂（tasks / notes），面向端口编程
-  domain/                     #   实体（task / note）+ 仓储接口 + 校验函数
-  infrastructure/             #   http.ts（axios + 端口发现 + 信封）+ HTTP 仓储实现
-  presentation/               #   router / App.vue / views / components
+src/                          # 前端（菱形架构）
+  application/                #   Pinia store 工厂（tasks / notes），面向南向端口编程
+  domain/                     #   实体（task / note）+ 南向仓储接口 + 校验函数
+  south/                      #   南向网关：http.ts（axios + 端口发现 + 信封）+ HTTP 仓储实现
+  north/                      #   北向网关：router / App.vue / views / components
   shared/                     #   di.ts（前端组合根）+ format.ts（时间格式化）
   styles/                     #   全局样式
   main.ts                     #   入口：Pinia / Router / Element Plus
 
-src-tauri/                    # 后端（Rust，DDD 五层）
+src-tauri/                    # 后端（Rust，菱形架构）
   migrations/                 #   版本化迁移（sqlx migrate! 管理）
   src/
     lib.rs                    #   组合根：配置 → 日志 → 连接池 → 仓储注入 → Axum → Tauri
     main.rs                   #   CLI 入口
     shared/                   #   config.rs / time.rs / error.rs（跨层约定）
-    domain/                   #   实体（task / note）+ 仓储 trait 端口 + DomainError
-    application/              #   用例服务（TaskService / NoteService）+ DTO + ServiceError
-    infrastructure/           #   db/mod.rs（连接池 + 迁移）+ task_repo / note_repo 适配器
-    presentation/             #   handlers / routes / error / response / extract / AppState
+    domain/                   #   实体（task / note）+ 南向端口 trait + DomainError
+    application/              #   用例服务 + 北向端口（ports.rs）+ DTO + ServiceError
+    south/                    #   南向网关：db/mod.rs（连接池 + 迁移）+ task_repo / note_repo 适配器
+    north/                    #   北向网关：handlers / routes / error / response / extract / AppState
 ```
 
 ## 运行
@@ -125,8 +126,8 @@ pnpm tauri build              # 全量发布构建（前端 + 打包安装包）
 
 ## 开发约定
 
-1. **新增业务**：前端 `domain/` 定义实体/端口 → `infrastructure/` 实现 → `application/` 加 store 工厂 → `presentation/` 加视图；后端 `domain/` 定义实体/trait → `infrastructure/` 实现 → `application/` 加服务 → `presentation/` 加 handler/路由。
-2. **依赖方向**：presentation → application → domain（← infrastructure 实现）；shared 可被任意层引用，但不要反向依赖。
-3. **改表结构**：新增 `migrations/<版本>_<描述>.sql`，同步后端 `infrastructure` 仓储与前端 `domain` 类型。
+1. **新增业务**：前端 `domain/` 定义实体/南向端口 → `south/` 实现 → `application/` 加 store 工厂 → `north/` 加视图；后端 `domain/` 定义实体/trait → `south/` 实现 → `application/` 加服务并实现北向端口 → `north/` 加 handler/路由。
+2. **依赖方向**：north → application → domain（← south 实现）；北向只依赖 `application` 的北向端口接口；shared 可被任意层引用，但不要反向依赖。
+3. **改表结构**：新增 `migrations/<版本>_<描述>.sql`，同步后端 `south` 仓储与前端 `domain` 类型。
 4. **时区**：永远存/传 UTC，不要在后端做本地时区转换；展示时由前端转本地。
-5. **错误**：领域错误（`DomainError`）/ 仓储错误（`RepoError`）由应用层统一为 `ServiceError`，表现层映射为统一信封。
+5. **错误**：领域错误（`DomainError`）/ 仓储错误（`RepoError`）由应用层统一为 `ServiceError`，北向网关映射为统一信封。
