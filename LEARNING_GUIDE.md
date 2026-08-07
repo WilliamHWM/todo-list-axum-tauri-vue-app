@@ -1,1919 +1,727 @@
-# Axum + Tauri + Vue 全栈项目学习指南
+# 项目学习指南（新手友好 · 全程可跳转代码）
 
-> 基于本项目 `axum-tauri-vue-app` 的完整学习笔记，涵盖每个技术点的原理、代码联系、进阶用法及企业级扩展方向。
+> 本文档是「Tauri + Axum + Vue + SQLite（菱形架构）」的学习手册。目标是让你从零到一
+> 读懂这个项目的每一层，并具备独立开发的能力。全文按「概览 → 环境 → 架构 → 后端逐层精读
+> → 一次请求的旅程 → 前端逐层精读 → 实战加功能 → 测试 → 排错 → 术语」组织。
+>
+> **如何跳转代码**：
+> - VS Code / WebStorm 中，点击本文的 `[相对路径](链接)` 即可打开对应文件。
+> - 行号提示以 `文件:行号` 写在正文里（如 `lib.rs:30`），方便你按 `Ctrl+G` 跳转。
+> - 如果你在 GitHub 上阅读，把链接换成 `#L行号` 可以精确跳到那一行。
 
 ---
 
 ## 目录
 
-1. [整体架构概览](#1-整体架构概览)
-2. [Tauri 2 核心概念](#2-tauri-2-核心概念)
-3. [Axum HTTP 服务](#3-axum-http-服务)
-4. [SQLx + SQLite 数据层](#4-sqlx--sqlite-数据层)
-5. [Vue 3 前端](#5-vue-3-前端)
-6. [TypeScript 类型系统](#6-typescript-类型系统)
-7. [Vite 构建配置](#7-vite-构建配置)
-8. [前后端数据流全链路](#8-前后端数据流全链路)
-9. [代码文件间联系图](#9-代码文件间联系图)
-10. [企业级扩展方向](#10-企业级扩展方向)
-    - 10.1 动态 SQL 查询
-    - 10.2 多模型/模块优雅扩展
-    - 10.3 更丰富的 lib.rs 架构模式
-    - 10.4 认证与授权
-    - 10.5 数据库迁移管理
-    - 10.6 错误处理体系
-    - 10.7 日志与可观测性
-    - 10.8 性能优化
-    - 10.9 测试策略
-    - 10.10 打包与发布
+1. [项目概览](#1-项目概览)
+2. [技术栈](#2-技术栈)
+3. [环境准备与运行](#3-环境准备与运行)
+4. [架构总览：菱形（六边形）架构](#4-架构总览菱形六边形架构)
+5. [后端代码逐层精读](#5-后端代码逐层精读)
+6. [一次完整请求的旅程（端到端）](#6-一次完整请求的旅程端到端)
+7. [前端代码逐层精读](#7-前端代码逐层精读)
+8. [关键技术点](#8-关键技术点)
+9. [数据库与迁移](#9-数据库与迁移)
+10. [实战：新增一个功能](#10-实战新增一个功能)
+11. [测试策略](#11-测试策略)
+12. [常见问题与排错](#12-常见问题与排错)
+13. [术语表](#13-术语表)
+14. [推荐学习路径](#14-推荐学习路径)
 
 ---
 
-## 1. 整体架构概览
+## 1. 项目概览
 
-本项目是一个**单进程桌面应用**，将 Tauri GUI、Axum HTTP 服务器、SQLite 数据库全部运行在同一个 Rust 进程中，Vue 前端通过 HTTP 与 Axum 通信。
+这是一个**单进程桌面应用**：一个 Rust 程序同时干三件事——
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    单进程 (同一 Rust Binary)                      │
-│                                                                 │
-│  ┌──────────────┐      HTTP fetch      ┌──────────────────┐    │
-│  │  Vue 3 + TS  │ ──────────────────►  │  Axum 服务器      │    │
-│  │  (WebView)   │  127.0.0.1:随机端口  │  /api/tasks ...   │    │
-│  └──────────────┘                      └────────┬─────────┘    │
-│        ▲                                         │              │
-│        │ invoke(get_api_port)                    │ sqlx         │
-│        ▼                                         ▼              │
-│  ┌──────────────┐                      ┌──────────────────┐    │
-│  │ Tauri 事件循环│                      │  SQLite (data.db) │    │
-│  │ (native窗口)  │◄──── manage(port) ── │  + migrations    │    │
-│  └──────────────┘                      └──────────────────┘    │
-│                                                                 │
-│  启动顺序:                                                      │
-│  1. lib.rs::run() → 初始化 DB → 绑定随机端口 → 启动 Axum        │
-│  2. Tauri Builder → 注册 get_api_port command → 运行窗口        │
-│  3. Vue 挂载 → invoke 获取端口 → fetch API                      │
-└─────────────────────────────────────────────────────────────────┘
-```
+1. **Tauri 2**：打开一个原生桌面窗口，里面跑的是前端页面（Vue）。
+2. **Axum**：在进程里启动一个 HTTP 服务器（只监听本机回环 `127.0.0.1`），给前端提供数据 API。
+3. **SQLite + SQLx**：本地数据库，负责持久化任务（tasks）和笔记（notes）。
 
-### 关键设计决策
+**前端不直接碰数据库**。流程是：Vue 页面 → 通过 Tauri 提供的 `invoke("get_api_port")`
+拿到 Axum 的随机端口 → 用 axios 调 `/api` → Axum 处理 → SQLx 写 SQLite。
 
-| 决策 | 原因 |
-|------|------|
-| Axum 绑定 `127.0.0.1:0` | 随机端口避免冲突；本地绑定确保安全性 |
-| Tauri 存 port 为 State | 前端通过 `invoke` 动态获取，不硬编码 |
-| SQLx 静态查询（`query_as!`） | 编译期类型检查，但本项目用动态 `query_as` 以简化 |
-| `rename_all = "camelCase"` | Rust snake_case ↔ 前端 camelCase 自动转换 |
-| Vue 不直接访问 DB | 保持安全边界；所有数据通过 Axum API |
+> 💡 为什么把 HTTP 服务器内嵌进桌面应用？因为这样前端 UI 和数据层天然分离：以后如果你想
+> 把这个应用改成"手机 App 的前端 + 远程服务器"，只需要把 Axum 那部分部署到服务器上，
+> 前端换一个 baseURL 即可，业务代码（domain / application）一行都不用改——这就是菱形架构的威力。
+
+**当前业务能力**（麻雀虽小五脏俱全）：
+- 任务的增删改查、分页、搜索、按完成状态筛选、排序。
+- 每个任务可以挂多条笔记（新增、编辑、删除）。
 
 ---
 
-## 2. Tauri 2 核心概念
+## 2. 技术栈
 
-### 2.1 项目结构
+| 角色 | 技术 | 说明 |
+|------|------|------|
+| 桌面壳 | [Tauri 2](https://tauri.app/) | WebView 窗口 + Rust 运行时 |
+| 后端 HTTP | [Axum 0.7](https://docs.rs/axum) | 内嵌 HTTP 服务器 |
+| 后端 DB | [SQLx 0.8](https://docs.rs/sqlx) + SQLite | 异步 SQL 库，内置迁移 |
+| 前端框架 | [Vue 3](https://cn.vuejs.org/) + TypeScript | 组合式 API（`<script setup>`） |
+| 前端状态 | [Pinia](https://pinia.vuejs.org/) | 全局状态管理 |
+| 前端路由 | [Vue Router 4](https://router.vuejs.org/) | hash 模式 |
+| UI 库 | [Element Plus](https://element-plus.org/zh-CN/) | 组件库 + 图标 |
+| HTTP 客户端 | [axios](https://axios-http.com/) | 前端发请求 |
+| 时间 | chrono (Rust) / dayjs (前端) | UTC 存储、本地显示 |
 
-```
-src-tauri/
-├── Cargo.toml          # Rust 依赖
-├── build.rs            # Tauri 构建脚本（自动生成 schema）
-├── tauri.conf.json     # 应用配置（窗口、安全、bundle）
-├── capabilities/
-│   └── default.json    # 权限配置（哪些 WebView 能调用哪些 API）
-├── src/
-│   ├── main.rs         # CLI 入口（仅一行：调用 lib::run()）
-│   ├── lib.rs          # 核心：启动 Axum + Tauri
-│   └── ...             # 业务逻辑
-└── migrations/
-    └── 001_init.sql    # 数据库迁移文件
-```
-
-### 2.2 main.rs → lib.rs 的分工
-
-**`main.rs`** (`src-tauri/src/main.rs`)：
-```rust
-// 防止 release 模式下打开额外控制台窗口
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
-fn main() {
-    axum_tauri_vue_app_lib::run();
-}
-```
-
-- Windows 特有的 `windows_subsystem = "windows"` 属性：release 构建时不显示控制台
-- `cfg_attr` 条件编译：只在非 debug 时生效
-- 仅仅是一个薄包装，真正的逻辑在 `lib.rs`
-
-**`lib.rs`** (`src-tauri/src/lib.rs`)：
-```rust
-// 模块声明（pub(crate) =  crate 内可见）
-pub(crate) mod api;
-pub(crate) mod db;
-pub(crate) mod models;
-
-// #[tokio::main] = 异步运行时入口
-#[tokio::main]
-pub async fn run() {
-    // 1. 初始化日志
-    tracing_subscriber::fmt::init();
-
-    // 2. 初始化数据库
-    let pool = db::init_pool().await.expect("...");
-    let state = AppState { db: pool };
-
-    // 3. 启动 Axum 服务器（随机端口）
-    let app = create_router(state);
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("...");
-    let port = listener.local_addr().unwrap().port();
-
-    // 后台运行 Axum
-    let axum_handle = tokio::spawn(async move {
-        axum::serve(listener, app).await...
-    });
-
-    // 4. 启动 Tauri（阻塞直到窗口关闭）
-    tauri::Builder::new()
-        .invoke_handler(generate_handler![get_api_port])
-        .setup(move |app| {
-            app.manage(port);  // 将 port 存入 Tauri State
-            Ok(())
-        })
-        .run(context)
-        .unwrap();
-
-    // 5. 清理（正常情况下不会到达这里）
-    axum_handle.abort();
-}
-
-// Tauri Command：前端可以调用的函数
-#[tauri::command]
-fn get_api_port(state: tauri::State<'_, u16>) -> u16 {
-    *state
-}
-```
-
-### 2.3 Tauri Command 机制
-
-```typescript
-// 前端调用（src/api/tasks.ts）
-const port = await invoke<number>("get_api_port");
-```
-
-```rust
-// 后端定义（lib.rs）
-#[tauri::command]
-fn get_api_port(state: tauri::State<'_, u16>) -> u16 {
-    *state
-}
-```
-
-**关键点：**
-- `#[tauri::command]` 宏将普通 Rust 函数暴露给前端 WebView
-- `tauri::State<'_, T>` 是从 Tauri 应用状态中读取值的提取器
-- `app.manage(port)` 将值注册到 Tauri 状态容器
-- `generate_handler![get_api_port]` 注册命令处理器
-
-### 2.4 Tauri Capabilities（权限）
-
-**`src-tauri/capabilities/default.json`**：
-```json
-{
-  "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["main"],
-  "permissions": [
-    "core:default",     // Tauri 核心 API（invoke、window 等）
-    "opener:default"    // tauri-plugin-opener 插件
-  ]
-}
-```
-
-- Tauri 2 的安全模型：**默认拒绝，显式授权**
-- 每个权限都可以精细控制到具体窗口、具体命令
-- 生产构建时，Tauri 会检查每个 invoke 调用是否有对应权限
-
-### 2.5 tauri.conf.json 关键配置
-
-```json
-{
-  "build": {
-    "beforeDevCommand": "pnpm dev",      // 开发时先启动 Vite
-    "devUrl": "http://localhost:1420",   // Vite 监听端口
-    "beforeBuildCommand": "pnpm build",  // 构建前编译前端
-    "frontendDist": "../dist"            // 前端产物目录
-  },
-  "app": {
-    "windows": [{ "label": "main", "width": 800, "height": 600 }],
-    "security": { "csp": null }          // null = 不限制 CSP（本地应用）
-  }
-}
-```
+配置入口：[package.json](./package.json)、[src-tauri/Cargo.toml](./src-tauri/Cargo.toml)、
+[src-tauri/tauri.conf.json](./src-tauri/tauri.conf.json)、[vite.config.ts](./vite.config.ts)。
 
 ---
 
-## 3. Axum HTTP 服务
+## 3. 环境准备与运行
 
-### 3.1 Axum 核心概念
+### 3.1 前置环境
 
-Axum 是 Rust 生态中最流行的 Web 框架，由 Tower 团队维护。核心理念：
+| 工具 | 用途 | 检查命令 |
+|------|------|----------|
+| [Rust](https://www.rust-lang.org/tools/install)（stable） | 编译后端 | `rustc --version` |
+| [Node.js](https://nodejs.org/)（≥ 18） | 跑前端工具链 | `node -v` |
+| [pnpm](https://pnpm.io/) | 包管理器 | `pnpm -v` |
 
-- **Extractors**：从请求中提取数据（`State`、`Json`、`Path`）
-- **Handlers**：异步函数，处理请求返回响应
-- **Router**：链式构建路由，支持中间件层
+Windows 上编译 Tauri 还需要 WebView2（Win10/11 一般自带）与 Microsoft C++ 构建工具
+（装 [VS Build Tools](https://visualstudio.microsoft.com/zh-hans/visual-cpp-build-tools/)，
+勾选 "C++ 桌面开发"）。macOS/Linux 额外需要系统 webkit 依赖，详见
+[Tauri 官方安装文档](https://tauri.app/start/prerequisites/)。
 
-### 3.2 routes.rs 逐行解析
+### 3.2 常用命令
 
-```rust
-// src-tauri/src/api/routes.rs
-pub fn create_router(state: AppState) -> Router {
-    Router::new()
-        // 健康检查
-        .route("/api/health", get(handlers::health))
-        // 任务集合：GET 列表 / POST 创建
-        .route(
-            "/api/tasks",
-            get(handlers::list_tasks).post(handlers::create_task),
-        )
-        // 单个任务：PUT 更新 / DELETE 删除
-        .route(
-            "/api/tasks/:id",
-            put(handlers::update_task).delete(handlers::delete_task),
-        )
-        // 注入共享状态（数据库连接池）
-        .with_state(state)
-        // CORS 中间件：允许任意来源（安全，因为是 localhost）
-        .layer(CorsLayer::new()
-            .allow_origin(Any)
-            .allow_methods(Any)
-            .allow_headers(Any))
-}
-```
-
-**Axum Router 链式 API 要点：**
-- `.route(path, method(handler))` — 定义路由
-- `.with_state(state)` — 将共享状态注入所有 handler
-- `.layer(middleware)` — 添加中间件（CORS、认证、日志等）
-- 多个 HTTP 方法可以链在同一路径上：`get(handler1).post(handler2)`
-
-### 3.3 handlers.rs 逐函数解析
-
-#### health — 最简单 handler
-```rust
-pub async fn health() -> &'static str {
-    "ok"
-}
-```
-- 零参数：不需要从请求提取任何数据
-- 返回 `&'static str`：Axum 自动转为 200 OK + text/plain
-
-#### list_tasks — 读取共享状态
-```rust
-pub async fn list_tasks(State(state): State<AppState>) -> ApiResult<Vec<Task>> {
-    db::get_all_tasks(&state.db)
-        .await
-        .map(Json)              // Ok → Json( Vec<Task> )
-        .map_err(internal_error) // Err(sqlx::Error) → ApiError(500)
-}
-```
-
-**`State<AppState>` Extractor**：Axum 从请求上下文中提取共享状态。
-- `AppState` 必须实现 `Clone`（Axum 要求）
-- 通过 `.with_state(state)` 注入到 Router
-
-#### create_task — 提取 JSON body
-```rust
-pub async fn create_task(
-    State(state): State<AppState>,      // 数据库连接池
-    Json(payload): Json<CreateTaskRequest>, // HTTP body → Rust struct
-) -> ApiResult<Task> {
-    // 1. 输入校验
-    let title = payload.title.trim().to_owned();
-    if title.is_empty() || title.chars().count() > 120 {
-        return Err(ApiError(StatusCode::BAD_REQUEST, "..."));
-    }
-    // 2. 调用 DB 层
-    db::create_task(&state.db, CreateTaskRequest { title })
-        .await
-        .map(Json)
-        .map_err(internal_error)
-}
-```
-
-**`Json<T>` Extractor**：
-- 自动解析 `Content-Type: application/json` 的请求体
-- 反序列化为 `T`（需要 `Deserialize` trait）
-- 解析失败自动返回 400 Bad Request
-
-#### update_task — Path 参数 + 部分更新
-```rust
-pub async fn update_task(
-    State(state): State<AppState>,
-    Path(id): Path<String>,             // URL 路径参数 :id
-    Json(mut payload): Json<UpdateTaskRequest>,
-) -> ApiResult<Task> {
-    // 校验至少提供一个字段
-    if payload.title.is_none() && payload.completed.is_none() {
-        return Err(ApiError(StatusCode::BAD_REQUEST, "..."));
-    }
-    // 部分更新：COALESCE 保留原值
-    db::update_task(&state.db, &id, payload)
-        .await
-        .map_err(internal_error)?
-        .map(Json)
-        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "..."))
-        //              ↑ fetch_optional 返回 None → 404
-}
-```
-
-**`Path<T>` Extractor**：从 URL 路径中提取参数。
-- `/api/tasks/:id` → `Path(id)` 中的 `id` 就是 `:id` 的值
-- 自动 URL 解码
-
-#### delete_task — 无响应体
-```rust
-pub async fn delete_task(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<StatusCode, ApiError> {
-    if db::delete_task(&state.db, &id).await.map_err(internal_error)? {
-        Ok(StatusCode::NO_CONTENT)  // 204 No Content，无 body
-    } else {
-        Err(ApiError(StatusCode::NOT_FOUND, "..."))
-    }
-}
-```
-- 返回 `StatusCode`：Axum 只返回状态码，不发送 body
-- 204 是 DELETE 成功时的标准响应
-
-#### internal_error — 错误映射
-```rust
-fn internal_error(error: sqlx::Error) -> ApiError {
-    tracing::error!(?error, "database request failed");
-    ApiError(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "数据库操作失败，请稍后重试。".into(),
-    )
-}
-```
-- 数据库错误对用户隐藏细节（安全）
-- 通过 `tracing` 记录详细错误（运维可见）
-
-### 3.4 result.rs — 统一错误格式
-
-```rust
-// 响应体结构
-#[derive(Serialize)]
-struct ErrorBody {
-    message: String,
-}
-
-// 错误类型：携带状态码 + 消息
-#[derive(Debug)]
-pub struct ApiError(pub StatusCode, pub String);
-
-// 实现 IntoResponse：Axum 知道如何将 ApiError 转为 HTTP 响应
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        (self.0, Json(ErrorBody { message: self.1 })).into_response()
-    }
-}
-
-// Handler 的返回类型别名
-pub type ApiResult<T> = Result<Json<T>, ApiError>;
-```
-
-**设计模式：**
-- `ApiError` 实现了 `IntoResponse`，所以可以直接从 handler 返回
-- 前端统一解析 `{"message": "..."}` 格式
-- 所有错误处理集中在 handlers 层，db 层只返回原始错误
-
----
-
-## 4. SQLx + SQLite 数据层
-
-### 4.1 db.rs 模块结构
-
-```rust
-// src-tauri/src/db.rs
-pub mod queries;
-pub use queries::*;
-pub type Pool = sqlx::SqlitePool;
-```
-
-- `pub mod queries` — 导出子模块
-- `pub use queries::*` — 扁平化导出（调用方只需 `db::init_pool()`）
-- `pub type Pool` — 类型别名，简化写法
-
-### 4.2 init_pool — 数据库初始化
-
-```rust
-pub async fn init_pool() -> Result<Pool, sqlx::Error> {
-    // 1. 创建连接池（最多 5 个连接）
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect("sqlite:data.db?mode=rwc") // 读写创建模式
-        .await?;
-
-    // 2. 运行迁移（编译期嵌入 SQL 文件）
-    sqlx::query(include_str!("../../migrations/001_init.sql"))
-        .execute(&pool)
-        .await?;
-
-    Ok(pool)
-}
-```
-
-**`include_str!` 宏**：在编译时将文件内容嵌入二进制，无需运行时文件读取。
-- 迁移 SQL 在编译时检查是否存在
-- 应用启动时自动执行（幂等操作：`CREATE TABLE IF NOT EXISTS`）
-
-**SQLite 连接 URI 选项**：
-- `mode=rwc` = read/write/create（读写并允许创建）
-- 不指定模式时，文件不存在会报错
-
-### 4.3 查询函数解析
-
-#### get_all_tasks
-```rust
-pub async fn get_all_tasks(pool: &Pool) -> Result<Vec<Task>, sqlx::Error> {
-    sqlx::query_as(
-        "SELECT id, title, completed, created_at FROM tasks ORDER BY created_at DESC, id DESC"
-    )
-    .fetch_all(pool)
-    .await
-}
-```
-
-**`query_as` vs `query`**：
-- `query_as::<_, Task>(sql)` — 将结果行映射到 Rust struct（需要 `FromRow` trait）
-- `query(sql)` — 返回原始行，需要手动提取字段
-- `query_as!`（带感叹号）— 编译期验证 SQL 列数/类型与 struct 字段匹配（**推荐生产使用**）
-
-**`FromRow` trait**：由 `sqlx::FromRow` derive 自动生成，将 DB 列按名映射到 struct 字段。
-
-#### create_task
-```rust
-pub async fn create_task(pool: &Pool, req: CreateTaskRequest) -> Result<Task, sqlx::Error> {
-    sqlx::query_as(
-        "INSERT INTO tasks (id, title) VALUES (?, ?) RETURNING id, title, completed, created_at"
-    )
-    .bind(Uuid::new_v4().to_string())  // 绑定第 1 个 ?
-    .bind(req.title)                    // 绑定第 2 个 ?
-    .fetch_one(pool)
-    .await
-}
-```
-
-**`RETURNING` 子句**：SQLite 3.35+ 支持，INSERT/UPDATE/DELETE 后直接返回修改的行。
-- 避免额外的 SELECT 查询
-- 保证返回的值与 DB 写入的一致（包括默认值）
-
-**参数绑定**：使用 `?` 占位符 + `.bind()` 链式绑定。
-- **永远不要用字符串拼接 SQL**（SQL 注入风险）
-- `bind()` 自动处理类型转换和转义
-
-#### update_task — COALESCE 部分更新技巧
-```rust
-pub async fn update_task(
-    pool: &Pool,
-    id: &str,
-    req: UpdateTaskRequest,
-) -> Result<Option<Task>, sqlx::Error> {
-    sqlx::query_as(
-        "UPDATE tasks \
-         SET title = COALESCE(?, title), \
-             completed = COALESCE(?, completed) \
-         WHERE id = ? \
-         RETURNING id, title, completed, created_at"
-    )
-    .bind(req.title)   // Option<String>：Some → 更新；None → 保持原值
-    .bind(req.completed) // Option<bool>：同上
-    .bind(id)
-    .fetch_optional(pool)
-    .await
-}
-```
-
-**`COALESCE` 部分更新模式**：
-- `req.title` 是 `Option<String>`
-- 如果前端没传 `title`，`req.title` 为 `None`，SQLx 绑定为 SQL `NULL`
-- `COALESCE(NULL, title)` = `title`（保持原值）
-- 如果前端传了 `title`，`COALESCE(Some("新标题"), title)` = `"新标题"`
-- **优势**：一条 SQL 处理所有字段，无需动态拼 SQL
-
-**`fetch_optional`**：返回 `Option<T>`，匹配 `None` 表示行不存在。
-
-#### delete_task
-```rust
-pub async fn delete_task(pool: &Pool, id: &str) -> Result<bool, sqlx::Error> {
-    Ok(
-        sqlx::query("DELETE FROM tasks WHERE id = ?")
-            .bind(id)
-            .execute(pool)
-            .await?
-            .rows_affected() > 0  // 返回 affected rows > 0
-    )
-}
-```
-
-- 用 `query`（不带 `_as`）因为只关心是否成功，不需要映射结果
-- `rows_affected()` 判断是否真的删除了行
-
-### 4.4 SQLx 查询方式对比
-
-| 方式 | 示例 | 检查时机 | 性能 | 推荐场景 |
-|------|------|----------|------|----------|
-| `query_as!` | `sqlx::query_as!("SELECT ...")` | **编译期** | 相同 | 固定 SQL，生产推荐 |
-| `query_as` | `sqlx::query_as("SELECT ...")` | 运行时 | 相同 | 动态 SQL、简单项目 |
-| `query!` | `sqlx::query!("SELECT ...")` | **编译期** | 相同 | 返回匿名行 |
-| `query` | `sqlx::query("DELETE ...")` | 运行时 | 相同 | 不返回行的操作 |
-
-**建议**：本项目用动态 `query_as` 是为了学习简洁性。企业项目应迁移到 `query_as!`（带宏）以获得编译期保证。
-
----
-
-## 5. Vue 3 前端
-
-### 5.1 main.ts — 应用入口
-
-```typescript
-import { createApp } from "vue";
-import App from "./App.vue";
-
-createApp(App).mount("#app");
-```
-
-- `createApp(App)` — 创建 Vue 应用实例
-- `.mount("#app")` — 挂载到 `index.html` 中的 `<div id="app">`
-- 这是 Vue 3 组合式 API 项目的标准入口
-
-### 5.2 App.vue — 根组件
-
-```vue
-<script setup lang="ts">
-import TaskList from "./components/TaskList.vue";
-</script>
-
-<template>
-  <TaskList />
-</template>
-
-<style>
-/* 全局 CSS 变量和基础重置 */
-:root {
-  font-family: Inter, ui-sans-serif, system-ui, ...;
-  color: #1e293b;
-  background: #f1f5f9;
-}
-* { box-sizing: border-box; }
-body { margin: 0; min-width: 320px; }
-</style>
-```
-
-**`<style>`（无 scoped）**：全局样式，影响所有组件。
-- CSS 变量定义在 `:root` 上
-- 基础重置（box-sizing、margin、font）
-
-**设计模式**：App 只做组合，不写业务逻辑。方便后续拆分路由。
-
-### 5.3 TaskList.vue — 业务组件详解
-
-#### 响应式状态
-```typescript
-const tasks = ref<Task[]>([]);           // 任务列表
-const newTitle = ref("");                // 输入框
-const filter = ref<Filter>("all");       // 筛选状态
-const isLoading = ref(true);             // 加载状态
-const isSubmitting = ref(false);         // 提交中（防重复点击）
-const errorMessage = ref("");            // 错误消息
-const editingId = ref<string | null>(null); // 正在编辑的任务 ID
-const editingTitle = ref("");            // 编辑中的标题
-```
-
-**`ref<T>`**：Vue 3 组合式 API 的响应式引用。
-- `ref(5)` → `value` 属性访问：`count.value++`
-- 模板中自动解包：`{{ count }}`（不需要 `.value`）
-- TypeScript 泛型参数提供类型推断
-
-#### 计算属性
-```typescript
-const visibleTasks = computed(() =>
-  tasks.value.filter(task => {
-    if (filter.value === "active") return !task.completed;
-    if (filter.value === "completed") return task.completed;
-    return true;
-  })
-);
-
-const completedCount = computed(() =>
-  tasks.value.filter(task => task.completed).length
-);
-```
-
-**`computed`**：缓存的计算值，依赖变化时自动重新计算。
-- 比在模板中写复杂表达式更高效（避免重复计算）
-- 只读（没有 setter）
-
-#### 异步操作模式
-```typescript
-async function loadTasks() {
-  isLoading.value = true;
-  errorMessage.value = "";
-  try {
-    tasks.value = await fetchTasks();
-  } catch (error) {
-    showError(error);
-  } finally {
-    isLoading.value = false;  // 无论成功失败都关闭 loading
-  }
-}
-```
-
-**标准异步模式**：`loading → try/catch/finally`。
-- `finally` 确保 loading 状态总是被重置
-- 错误统一由 `showError` 处理
-
-#### 乐观更新
-```typescript
-async function addTask() {
-  const title = newTitle.value.trim();
-  if (!title || isSubmitting.value) return;
-
-  isSubmitting.value = true;
-  try {
-    // 乐观更新：先插入，再等待响应
-    tasks.value.unshift(await createTask(title));
-    newTitle.value = "";
-  } catch (error) {
-    showError(error);
-    // 注意：如果 API 失败，任务已经添加到列表中（需要回滚）
-  } finally {
-    isSubmitting.value = false;
-  }
-}
-```
-
-**乐观更新**：在 API 返回前就更新 UI，提升体验。
-- 本项目中如果 API 失败，任务会残留（可以改进为回滚）
-- 更完善的做法：保存旧状态，失败时恢复
-
-#### 事件处理
-```vue
-<!-- 表单提交（阻止默认行为） -->
-<form @submit.prevent="addTask">
-
-<!-- 点击筛选 -->
-<button @click="filter = item[0]">
-
-<!-- 复选框变化 -->
-<input type="checkbox" @change="toggleTask(task)" />
-
-<!-- ESC 取消编辑 -->
-<input @keydown.esc="editingId = null" />
-```
-
-**Vue 事件修饰符**：
-- `.prevent` — `event.preventDefault()`
-- `.stop` — `event.stopPropagation()`
-- `.self` — 只在元素自身触发（非子元素冒泡）
-- `.once` — 只触发一次
-
-### 5.4 Vue 模板语法要点
-
-```vue
-<!-- 条件渲染 -->
-<div v-if="isLoading">加载中...</div>
-<div v-else-if="visibleTasks.length === 0">暂无任务</div>
-<div v-else>
-  <ul>
-    <li v-for="task in visibleTasks" :key="task.id">
-      {{ task.title }}
-    </li>
-  </ul>
-</div>
-
-<!-- 双向绑定 -->
-<input v-model="newTitle" maxlength="120" />
-
-<!-- 动态 class -->
-<li :class="{ done: task.completed }">
-
-<!-- 属性绑定 -->
-<input :disabled="isSubmitting" />
-
-<!-- 内联常量数组（避免在 script 中额外定义） -->
-<button v-for="item in ([['all', '全部'], ...] as const)" ...>
-```
-
----
-
-## 6. TypeScript 类型系统
-
-### 6.1 前后端类型契约
-
-**Rust 端**（`models/task.rs`）：
-```rust
-#[derive(Debug, Serialize, FromRow, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct Task {
-    pub id: String,
-    pub title: String,
-    pub completed: bool,
-    pub created_at: String,
-}
-```
-
-**TypeScript 端**（`src/api/tasks.ts`）：
-```typescript
-export interface Task {
-  id: string;
-  title: string;
-  completed: boolean;
-  createdAt: string;  // ← camelCase，与 Rust serde rename 对应
-}
-```
-
-**契约维护要点**：
-- Rust 用 `#[serde(rename_all = "camelCase")]` 自动转换
-- TypeScript 用 `interface` 定义类型（不是 `type`，因为 interface 可合并）
-- 字段名不一致会导致运行时错误（TypeScript 编译期抓不到，因为 JSON 是动态的）
-- **进阶**：可以用 `rust-analyzer` + `tauri` 插件或生成代码保持同步
-
-### 6.2 TypeScript 配置要点
-
-**`tsconfig.json`**：
-```json
-{
-  "compilerOptions": {
-    "target": "ES2020",           // 输出 ES2020 语法
-    "module": "ESNext",           // 使用 ESM 模块
-    "moduleResolution": "bundler", // 兼容 Vite 的模块解析
-    "strict": true,               // 启用所有严格检查
-    "noUnusedLocals": true,       // 未使用变量报错
-    "noUnusedParameters": true,   // 未使用参数报错
-    "noEmit": true                // 不生成 JS（Vite 处理）
-  },
-  "include": ["src/**/*.ts", "src/**/*.vue"]
-}
-```
-
-**`vite-env.d.ts`**：
-```typescript
-/// <reference types="vite/client" />
-
-declare module "*.vue" {
-  import type { DefineComponent } from "vue";
-  const component: DefineComponent<{}, {}, any>;
-  export default component;
-}
-```
-
-- `/// <reference types="vite/client" />` — 让 Vite 的 asset 导入有类型（`import imgUrl from './logo.png'`）
-- `declare module "*.vue"` — 让 `.vue` 文件有类型（默认 Vue 类型声明）
-
-### 6.3 tsconfig.node.json
-
-```json
-{
-  "compilerOptions": {
-    "composite": true,  // 允许被其他 tsconfig 引用
-    "skipLibCheck": true,
-    "module": "ESNext",
-    "moduleResolution": "bundler"
-  },
-  "include": ["vite.config.ts"]
-}
-```
-
-- Vite 配置文件在 Node 环境运行，需要独立的 tsconfig
-- `composite: true` 允许主 tsconfig 引用它（通过 `"references"`）
-
----
-
-## 7. Vite 构建配置
-
-### 7.1 vite.config.ts
-
-```typescript
-export default defineConfig(async () => ({
-  plugins: [vue()],
-
-  // 1. 不清屏：让 Tauri 能看到 Rust 编译错误
-  clearScreen: false,
-
-  // 2. 固定端口 + HMR
-  server: {
-    port: 1420,
-    strictPort: true,           // 端口被占用时报错（不自动换端口）
-    host: host || false,        // false = 只监听 localhost
-    hmr: host ? { protocol: "ws", host, port: 1421 } : undefined,
-  },
-
-  // 3. 忽略 src-tauri 的热重载（Rust 代码变化不需要 Vite 重启）
-  watch: { ignored: ["**/src-tauri/**"] },
-}));
-```
-
-**Tauri 开发模式流程**：
-1. `pnpm tauri dev` 启动
-2. Tauri 编译 Rust 代码
-3. Rust 代码启动后，执行 `pnpm dev`（Vite 在 1420 端口）
-4. Tauri 窗口加载 `http://localhost:1420`
-5. Vite HMR（热模块替换）在 1421 端口监听 Vue 变化
-6. Vue 文件变化 → Vite 推送更新 → 浏览器即时刷新
-
-### 7.2 构建产物流向
-
-```
-pnpm tauri build
-  │
-  ├─► pnpm build              # Vue 前端 → dist/
-  │     └─ vue-tsc --noEmit    # 类型检查
-  │     └─ vite build          # 打包为静态文件
-  │
-  ├─► cargo build --release   # Rust 后端 → target/release/
-  │
-  └─► tauri bundle             # 打包为原生安装包
-        ├─ macOS: .dmg / .app
-        ├─ Windows: .exe / .msi
-        └─ Linux: .deb / .AppImage
-```
-
----
-
-## 8. 前后端数据流全链路
-
-以"添加任务"为例，完整追踪数据流：
-
-```
-┌─ 前端触发 ──────────────────────────────────────────────────────┐
-│                                                                  │
-│  1. 用户点击"添加任务"按钮                                       │
-│     ↓                                                            │
-│  2. TaskList.vue: addTask()                                     │
-│     - 读取 newTitle.value                                       │
-│     - 调用 createTask(title)                                    │
-│     ↓                                                            │
-│  3. src/api/tasks.ts: createTask()                              │
-│     - 调用 getApiBaseUrl() → invoke("get_api_port")             │
-│     - 构造 fetch("http://127.0.0.1:PORT/api/tasks", {           │
-│         method: "POST",                                         │
-│         body: JSON.stringify({ title })                         │
-│       })                                                        │
-│     - 解析响应为 Task 类型                                      │
-│     ↓                                                            │
-│  4. Vue 收到 Task，乐观更新：                                    │
-│     tasks.value.unshift(task)                                   │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
-                            ↓ HTTP POST
-┌─ 后端处理 ──────────────────────────────────────────────────────┐
-│                                                                  │
-│  5. Axum Router 匹配 /api/tasks + POST                          │
-│     ↓                                                            │
-│  6. handlers::create_task()                                     │
-│     - State<AppState> 提取 pool                                 │
-│     - Json<CreateTaskRequest> 解析 body                         │
-│     - 校验 title（非空，≤120字符）                               │
-│     ↓                                                            │
-│  7. db::create_task()                                           │
-│     - sqlx::query_as("INSERT ... RETURNING ...")                │
-│     - bind(Uuid::new_v4()) + bind(title)                        │
-│     - 返回 Task 实体                                             │
-│     ↓                                                            │
-│  8. handlers 返回 ApiResult<Task>                               │
-│     - .map(Json) → 200 OK + JSON body                           │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
-                            ↓ SQL
-┌─ 数据持久化 ─────────────────────────────────────────────────────┐
-│                                                                  │
-│  9. SQLite: INSERT INTO tasks (id, title) VALUES (...)          │
-│     - id: UUID v4                                               │
-│     - title: 用户输入                                           │
-│     - completed: DEFAULT 0                                      │
-│     - created_at: DEFAULT datetime('now')                       │
-│     - RETURNING 返回完整行                                       │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 9. 代码文件间联系图
-
-```
-src-tauri/src/
-│
-├── main.rs ─────────────────────────────────────────────────┐
-│   (调用 lib::run)                                           │
-│                                                            │
-├── lib.rs ◄─────────────────────────────────────────────────┤
-│   ├── use api::create_router                               │
-│   ├── use api::AppState                                    │
-│   ├── use tauri::Manager                                   │
-│   ├── use tokio::net::TcpListener                          │
-│   │                                                          │
-│   ├── run() 函数：                                          │
-│   │   ├── db::init_pool() ────────────────────────────────┐│
-│   │   │   │                                               ││
-│   │   │   ▼                                               ││
-│   │   │   src-tauri/src/db.rs                             ││
-│   │   │   └── pub mod queries;                            ││
-│   │   │       └── queries.rs                              ││
-│   │   │           ├── init_pool()                         ││
-│   │   │           ├── get_all_tasks()                     ││
-│   │   │           ├── create_task()                       ││
-│   │   │           ├── update_task()                       ││
-│   │   │           └── delete_task()                       ││
-│   │   │               └── 依赖: models::{Task, ...}       ││
-│   │   │                   └── models.rs                   ││
-│   │   │                       └── task.rs                 ││
-│   │   │                           ├── Task                ││
-│   │   │                           ├── CreateTaskRequest   ││
-│   │   │                           └── UpdateTaskRequest   ││
-│   │   │                                                       ││
-│   │   ├── create_router(state) ──────────────────────────┐││
-│   │   │   │                                              │││
-│   │   │   ▼                                              │││
-│   │   │   src-tauri/src/api/                              │││
-│   │   │   ├── api.rs  ──→ AppState struct               │││
-│   │   │   ├── routes.rs ─→ Router 构建                   │││
-│   │   │   │               └── .route("/api/tasks",       │││
-│   │   │   │                   get(list_tasks)            │││
-│   │   │   │                   .post(create_task))        │││
-│   │   │   │               .route("/api/tasks/:id",       │││
-│   │   │   │                   put(update_task)           │││
-│   │   │   │                   .delete(delete_task))      │││
-│   │   │   ├── handlers.rs ─→ 各路由处理函数              │││
-│   │   │   │               └── 依赖: db::*, models::*    │││
-│   │   │   └── result.rs ──→ ApiError, ApiResult<T>      │││
-│   │   │                                                       ││
-│   │   ├── TcpListener::bind("127.0.0.1:0")               ││
-│   │   ├── tokio::spawn(axum::serve)                       ││
-│   │   └── tauri::Builder                                  ││
-│   │       ├── invoke_handler![get_api_port]               ││
-│   │       ├── setup(move |app| { app.manage(port) })      ││
-│   │       └── .run(context)                               ││
-│                                                            ││
-└────────────────────────────────────────────────────────────┘│
-                                                             │
-src/ (Vue 前端)                                              │
-├── main.ts ───→ createApp(App)                              │
-├── App.vue ────→ <TaskList />                               │
-├── components/TaskList.vue                                  │
-│   └── import { createTask, ... } from "../api/tasks"       │
-│       └── tasks.ts ───→ invoke("get_api_port")            │
-│           └── fetch("http://127.0.0.1:PORT/api/tasks")    │
-│               └── 请求 Axum API                           │
-└── vite.config.ts ──→ 端口 1420, HMR 1421                  │
-```
-
----
-
-## 10. 企业级扩展方向
-
-### 10.1 动态 SQL 查询
-
-当需要根据用户输入动态构建查询条件时（如搜索、筛选、分页），使用 SQLx 的动态查询：
-
-```rust
-use sqlx::Row;
-use diesel_migrations::*; // 或直接用 sqlx::query
-
-/// 带筛选和分页的任务查询（动态 SQL）
-pub async fn search_tasks(
-    pool: &Pool,
-    filter: &str,      // "all" | "active" | "completed"
-    search: Option<&str>,
-    page: u32,
-    page_size: u32,
-) -> Result<(Vec<Task>, u64), sqlx::Error> {
-    // 构建动态 WHERE 子句
-    let mut conditions = vec![];
-    let mut params: Vec<Box<dyn sqlx::Encode + Send>> = vec![];
-
-    match filter {
-        "active" => {
-            conditions.push("completed = ?".to_string());
-            params.push(Box::new(0u8));
-        }
-        "completed" => {
-            conditions.push("completed = ?".to_string());
-            params.push(Box::new(1u8));
-        }
-        _ => {} // "all"
-    }
-
-    if let Some(query) = search {
-        if !query.is_empty() {
-            conditions.push("title LIKE ?".to_string());
-            params.push(Box::new(format!("%{}%", query)));
-        }
-    }
-
-    let where_clause = if conditions.is_empty() {
-        "".to_string()
-    } else {
-        format!("WHERE {}", conditions.join(" AND "))
-    };
-
-    // 总数量查询
-    let count_sql = format!(
-        "SELECT COUNT(*) FROM tasks {}",
-        where_clause
-    );
-    let count: (u64,) = sqlx::query_as(&count_sql)
-        .fetch_one(pool)
-        .await?;
-    // 注意：动态查询不能用 query_as!，需要手动绑定参数
-
-    // 数据查询
-    let data_sql = format!(
-        "SELECT id, title, completed, created_at FROM tasks {} \
-         ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        where_clause
-    );
-    let tasks: Vec<Task> = sqlx::query_as(&data_sql)
-        .fetch_all(pool)
-        .await?;
-
-    Ok((tasks, count.0))
-}
-```
-
-**更推荐的动态 SQL 方案 — 使用 `sqlx::query!` 结合条件构建**：
-
-```rust
-// 使用 sqlx::query!（编译期验证）配合条件
-pub async fn search_tasks_v2(
-    pool: &Pool,
-    filter: &str,
-    search: Option<&str>,
-    page: u32,
-    page_size: u32,
-) -> Result<(Vec<Task>, u64), sqlx::Error> {
-    // 方案 A：使用 sqlx::query! + 条件分支
-    let (tasks, count) = match (filter, search) {
-        ("active", Some(s)) if !s.is_empty() => {
-            let rows: Vec<(String, String, bool, String)> = sqlx::query_as(
-                "SELECT id, title, completed, created_at FROM tasks \
-                 WHERE completed = 0 AND title LIKE ? \
-                 ORDER BY created_at DESC LIMIT ? OFFSET ?"
-            )
-            .bind(format!("%{}%", s))
-            .bind(page_size as i64)
-            .bind((page * page_size) as i64)
-            .fetch_all(pool)
-            .await?;
-            (rows, sqlx::query_as(
-                "SELECT COUNT(*) FROM tasks WHERE completed = 0 AND title LIKE ?"
-            ).bind(format!("%{}%", s)).fetch_one(pool).await?.0 as u64)
-        }
-        // ... 其他组合
-        _ => {
-            // 默认：无筛选
-            let rows: Vec<Task> = sqlx::query_as(
-                "SELECT id, title, completed, created_at FROM tasks \
-                 ORDER BY created_at DESC LIMIT ? OFFSET ?"
-            )
-            .bind(page_size as i64)
-            .bind((page * page_size) as i64)
-            .fetch_all(pool)
-            .await?;
-            let count: (u64,) = sqlx::query_as("SELECT COUNT(*) FROM tasks")
-                .fetch_one(pool)
-                .await?;
-            (rows, count.0)
-        }
-    };
-    Ok((tasks, count))
-}
-```
-
-**企业级方案 — 使用 `diesel` 或 `sea-orm` 进行类型安全的动态查询**：
-
-```toml
-# Cargo.toml 添加
-sea-orm = { version = "0.12", features = ["sqlx-sqlite", "runtime-tokio", "macros"] }
-```
-
-```rust
-// 使用 SeaORM 的 QueryFilter 动态构建查询
-use sea_orm::{EntityTrait, QueryFilter, QueryOrder, PaginatorTrait};
-use crate::models::task::TaskEntity;
-
-pub async fn search_tasks_seaorm(
-    pool: &Pool,
-    filter: &str,
-    search: Option<&str>,
-    page: u32,
-    page_size: u32,
-) -> Result<(Vec<Task>, u64), sea_orm::DbErr> {
-    let mut query = TaskEntity::find();
-
-    // 动态添加筛选条件
-    match filter {
-        "active" => query = query.filter(task::Column::Completed.eq(false)),
-        "completed" => query = query.filter(task::Column::Completed.eq(true)),
-        _ => {}
-    }
-
-    if let Some(s) = search {
-        if !s.is_empty() {
-            query = query.filter(task::Column::Title.contains(s));
-        }
-    }
-
-    // 分页
-    let paginator = query
-        .order_by_desc(task::Column::CreatedAt)
-        .paginate(pool, page_size as u64);
-    let total = paginator.num_items().await?;
-    let tasks = paginator.fetch_page(page).await?;
-
-    Ok((tasks, total))
-}
-```
-
-**动态 SQL 最佳实践**：
-1. **永远不要字符串拼接用户输入** — 使用参数绑定
-2. **少量动态条件** — 用 `match` 分支 + 静态 `query_as!`
-3. **大量动态条件** — 用 SeaORM/SQLx 动态查询构建器
-4. **性能关键路径** — 用 `query_as!`（编译期验证）+ 缓存 prepared statement
-
----
-
-### 10.2 多模型/模块优雅扩展
-
-随着功能增加，`models.rs` 和 `db.rs` 会膨胀。采用模块化扩展：
-
-```
-src-tauri/src/
-├── lib.rs
-├── main.rs
-├── db.rs
-├── models.rs
-│
-├── models/
-│   ├── mod.rs          # 统一导出
-│   ├── task.rs         # 现有任务模型
-│   ├── user.rs         # 新增用户模型
-│   └── category.rs     # 新增分类模型
-│
-├── db/
-│   ├── mod.rs          # 统一导出
-│   ├── queries.rs      # 现有查询
-│   ├── task_queries.rs # 任务查询（拆分）
-│   ├── user_queries.rs # 用户查询（新增）
-│   └── category_queries.rs
-│
-├── api/
-│   ├── mod.rs
-│   ├── routes.rs
-│   ├── handlers.rs
-│   ├── result.rs
-│   ├── task_handlers.rs    # 任务 handler（拆分）
-│   ├── user_handlers.rs    # 用户 handler（新增）
-│   └── middleware/         # 中间件目录
-│       ├── mod.rs
-│       ├── auth.rs         # 认证中间件
-│       └── rate_limit.rs   # 限流中间件
-│
-└── services/               # 业务逻辑层（可选）
-    ├── mod.rs
-    ├── task_service.rs
-    └── user_service.rs
-```
-
-**models/mod.rs**：
-```rust
-pub mod task;
-pub mod user;
-pub mod category;
-
-// 统一导出（保持向后兼容）
-pub use task::{Task, CreateTaskRequest, UpdateTaskRequest};
-pub use user::{User, CreateUserRequest};
-pub use category::{Category, CreateCategoryRequest};
-```
-
-**db/mod.rs**：
-```rust
-pub mod queries;      // 保留原有（或重定向）
-pub mod task_queries;
-pub mod user_queries;
-pub mod category_queries;
-
-pub use queries::*;
-pub use task_queries::*;
-pub use user_queries::*;
-pub use category_queries::*;
-
-pub type Pool = sqlx::SqlitePool;
-```
-
-**新增 user 模型示例**：
-
-```rust
-// models/user.rs
-use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
-
-#[derive(Debug, Serialize, FromRow, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct User {
-    pub id: String,
-    pub username: String,
-    pub email: String,
-    pub created_at: String,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateUserRequest {
-    pub username: String,
-    pub email: String,
-    pub password: String, // 实际应使用 hashed password
-}
-```
-
-```rust
-// db/user_queries.rs
-use super::Pool;
-use crate::models::user::{CreateUserRequest, User};
-use uuid::Uuid;
-
-pub async fn create_user(pool: &Pool, req: CreateUserRequest) -> Result<User, sqlx::Error> {
-    sqlx::query_as(
-        "INSERT INTO users (id, username, email, password_hash, created_at) \
-         VALUES (?, ?, ?, ?, datetime('now')) \
-         RETURNING id, username, email, created_at"
-    )
-    .bind(Uuid::new_v4().to_string())
-    .bind(req.username)
-    .bind(req.email)
-    .bind(hash_password(&req.password)) // 实际应使用 argon2/bcrypt
-    .fetch_one(pool)
-    .await
-}
-
-fn hash_password(password: &str) -> String {
-    // 使用 argon2
-    argon2::hash_encoded(password.as_bytes(), &rand::random::<[u8; 16]>(), argon2::Params::default()).unwrap()
-}
-```
-
-**迁移文件**：
-```sql
--- migrations/002_add_users.sql
-CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    username TEXT NOT NULL UNIQUE,
-    email TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-```
-
----
-
-### 10.3 lib.rs 企业级架构
-
-```rust
-// lib.rs — 企业级重构示例
-use axum::extract::DefaultState;
-use std::sync::Arc;
-use tauri::Manager;
-use tokio::net::TcpListener;
-
-/// 共享应用状态（扩展版）
-#[derive(Clone)]
-pub struct AppState {
-    pub db: sqlx::SqlitePool,
-    pub config: Arc<AppConfig>,      // 应用配置
-    pub rate_limiter: Arc<RateLimiter>, // 请求限流
-}
-
-#[derive(Clone)]
-pub struct AppConfig {
-    pub max_title_length: usize,
-    pub default_page_size: u32,
-    pub enable_rate_limiting: bool,
-}
-
-/// 应用启动入口
-#[tokio::main]
-pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. 初始化日志（支持分级日志）
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .init();
-
-    // 2. 加载配置（从环境变量或配置文件）
-    let config = load_config()?;
-    tracing::info!(?config, "配置加载完成");
-
-    // 3. 初始化数据库
-    let pool = db::init_pool(&config.db_url()).await?;
-    tracing::info!("数据库连接池初始化完成");
-
-    // 4. 创建应用状态
-    let state = AppState {
-        db: pool,
-        config: Arc::new(config),
-        rate_limiter: Arc::new(RateLimiter::new()),
-    };
-
-    // 5. 启动 Axum 服务器
-    let app = create_router(state.clone());
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let port = listener.local_addr()?.port();
-    tracing::info!(port, "Axum 服务器启动");
-
-    let axum_handle = tokio::spawn(async move {
-        axum::serve(listener, app).await?;
-        anyhow::Result::<()>::Ok(())
-    });
-
-    // 6. 启动 Tauri
-    let context = tauri::generate_context!();
-    tauri::Builder::new()
-        .invoke_handler(tauri::generate_handler![get_api_port])
-        .setup(move |app| {
-            app.manage(port);
-            Ok(())
-        })
-        .run(context)
-        .unwrap();
-
-    axum_handle.abort();
-    Ok(())
-}
-
-/// 配置加载（支持 .env 文件）
-fn load_config() -> Result<AppConfig, Box<dyn std::error::Error>> {
-    dotenvy::dotenv().ok(); // 加载 .env 文件
-    Ok(AppConfig {
-        max_title_length: env::var("MAX_TITLE_LENGTH")
-            .unwrap_or_else(|_| "120".to_string())
-            .parse()?,
-        default_page_size: env::var("DEFAULT_PAGE_SIZE")
-            .unwrap_or_else(|_| "20".to_string())
-            .parse()?,
-        enable_rate_limiting: env::var("ENABLE_RATE_LIMITING")
-            .map(|v| v == "true")
-            .unwrap_or(false),
-    })
-}
-```
-
-**`anyhow` 错误处理**（替代 `unwrap`/`expect`）：
-```toml
-# Cargo.toml
-anyhow = "1"
-```
-
-```rust
-// 使用 anyhow::Result 替代 unwrap
-pub async fn run() -> Result<(), anyhow::Error> {
-    let pool = db::init_pool().await?; // ? 自动转换错误类型
-    Ok(())
-}
-```
-
----
-
-### 10.4 认证与授权
-
-```rust
-// api/middleware/auth.rs
-use axum::{
-    extract::{Request, State},
-    http::{HeaderName, HeaderValue, StatusCode},
-    middleware::Next,
-    response::Response,
-};
-use jwt_simple::prelude::*;
-
-const JWT_SECRET: &str = env!("JWT_SECRET");
-
-#[derive(Clone)]
-pub struct AuthState {
-    pub secret: KeyPairSecret,
-}
-
-/// JWT 认证中间件
-pub async fn auth_middleware(
-    State(state): State<AuthState>,
-    mut req: Request,
-    next: Next,
-) -> Result<Response, (StatusCode, String)> {
-    let auth_header = req
-        .headers()
-        .get("Authorization")
-        .ok_or((StatusCode::UNAUTHORIZED, "缺少 Authorization header".into()))?;
-
-    let token_str = auth_header
-        .to_str()
-        .map(|s| s.strip_prefix("Bearer ").unwrap_or(s))
-        .map_err(|_| (StatusCode::UNAUTHORIZED, "无效的 Authorization header".into()))?;
-
-    // 验证 JWT
-    let opts = VerificationOptions {
-        required_spec_claims: vec!["exp".into()],
-        ..Default::default()
-    };
-    let claims: HashMap<String, serde_json::Value> = state.secret.verify_token(token_str, Some(opts))
-        .map_err(|_| (StatusCode::UNAUTHORIZED, "JWT 验证失败".into()))?;
-
-    // 将用户 ID 注入请求（供 handler 使用）
-    let user_id = claims["sub"].as_str()
-        .ok_or((StatusCode::UNAUTHORIZED, "JWT 缺少 sub 字段"))?;
-
-    req.extensions_mut().insert(user_id.to_string());
-    Ok(next.run(req).await)
-}
-
-/// 从请求中提取用户 ID
-pub async fn get_current_user(
-    req: axum::extract::Request,
-) -> Result<String, (StatusCode, String)> {
-    req.extensions()
-        .get::<String>()
-        .cloned()
-        .ok_or((StatusCode::UNAUTHORIZED, "未认证".into()))
-}
-```
-
-**在路由中使用**：
-```rust
-// api/routes.rs
-pub fn create_router(state: AppState) -> Router {
-    Router::new()
-        .route("/api/tasks", get(list_tasks).post(create_task))
-        .route("/api/tasks/:id", put(update_task).delete(delete_task))
-        // 受保护的路由组
-        .route("/api/my-tasks", get(my_tasks))
-        .layer(tower::layer::layer_fn(|handler| {
-            move |req| auth_middleware(State(state.auth.clone()), req, handler)
-        }))
-        .with_state(state)
-        .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
-}
-```
-
----
-
-### 10.5 数据库迁移管理
-
-**当前方案**（简单）：
-```rust
-// lib.rs 中直接用 include_str!
-sqlx::query(include_str!("../../migrations/001_init.sql"))
-    .execute(&pool)
-    .await?;
-```
-
-**企业级方案 — 使用 `sqlx migrate`**：
-```toml
-# Cargo.toml
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "uuid", "migrate"] }
-```
-
-```rust
-// lib.rs
-pub async fn init_pool() -> Result<Pool, sqlx::Error> {
-    let pool = sqlx::SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect("sqlite:data.db?mode=rwc")
-        .await?;
-
-    // 自动运行所有未应用的迁移
-    sqlx::migrate!("src-tauri/migrations")
-        .run(&pool)
-        .await?;
-
-    Ok(pool)
-}
-```
-
-**迁移文件命名规范**：
-```
-migrations/
-├── 001_init.sql
-├── 002_add_users.sql
-├── 003_add_categories.sql
-└── 004_add_task_categories.sql
-```
-
-**创建新迁移**：
 ```bash
-# 使用 sqlx CLI
-sqlx migrate add add_tasks_archive
-# 生成 migrations/005_add_tasks_archive.sql
+pnpm install                 # 安装前端依赖（首次必须）
+pnpm tauri dev               # 开发模式：热重载 + 打开桌面窗口（最常用）
+pnpm dev                     # 仅前端：在浏览器里预览（不启动 Rust/Tauri）
+pnpm build                   # 前端类型检查 + 打包（= vue-tsc --noEmit && vite build）
+cd src-tauri && cargo check  # 后端类型检查（改 Rust 代码后必跑）
+cd src-tauri && cargo test   # 后端测试（8 个用例，不开窗口）
+pnpm tauri build             # 全量发布：打包成可安装的应用
 ```
+
+> 💡 开发时的分工：`pnpm tauri dev` 会先执行 `vite`（见 [tauri.conf.json](./src-tauri/tauri.conf.json)
+> 的 `beforeDevCommand`），然后编译 Rust 并启动窗口。窗口里加载 `http://localhost:1420`
+> （Vite 端口）。热更新时，改前端秒级生效，改 Rust 会重新编译后端。
+
+### 3.3 环境变量配置
+
+后端启动时从环境变量读取配置（见 [shared/config.rs](./src-tauri/src/shared/config.rs)），
+未设置就用默认值，因此开箱即用：
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `APP_DATABASE_URL` | `sqlite:data.db?mode=rwc` | SQLite 连接串（`data.db` 在启动目录） |
+| `APP_HOST` | `127.0.0.1` | API 监听地址（仅本机） |
+| `APP_PORT` | `0` | 0 = 让操作系统分配随机端口 |
+| `APP_LOG_LEVEL` | `info` | 日志级别（也可用 `RUST_LOG` 覆盖） |
+| `APP_LOG_FORMAT` | `text` | 设成 `json` 输出结构化日志 |
+| `APP_REQUEST_TIMEOUT_SECS` | `15` | 每个 HTTP 请求的超时秒数 |
+| `APP_DB_MAX_CONNECTIONS` | `5` | SQLite 连接池上限 |
+
+> ⚠️ 注意：项目根目录有个 [.env](./.env)（内容 `DATABASE_URL=sqlite://./data.db`），
+> 它是给 sqlx 命令行工具用的，**Rust 应用并不自动读取它**。应用读的是上面的 `APP_*` 环境变量。
 
 ---
 
-### 10.6 错误处理体系
+## 4. 架构总览：菱形（六边形）架构
 
-**当前问题**：硬编码中文字符串，不利于多语言。
+这个项目采用的是**菱形架构**（也叫六边形 / 端口-适配器架构），核心思想一句话：
 
-**企业级方案 — 使用 `thiserror` + 枚举**：
-```rust
-// api/errors.rs
-use axum::{http::StatusCode, response::IntoResponse, Json};
-use serde::Serialize;
-use thiserror::Error;
+> **把"业务核心"放在中间，把"进出业务核心的技术通道"放在上下两边，让两边都能独立替换。**
 
-#[derive(Error, Debug)]
-pub enum AppError {
-    #[error("数据库操作失败：{0}")]
-    Database(#[from] sqlx::Error),
-
-    #[error("任务不存在")]
-    TaskNotFound,
-
-    #[error("任务标题无效：{0}")]
-    InvalidTitle(String),
-
-    #[error("未认证")]
-    Unauthorized,
-
-    #[error("权限不足")]
-    Forbidden,
-}
-
-#[derive(Serialize)]
-struct ErrorBody {
-    code: String,
-    message: String,
-}
-
-impl IntoResponse for AppError {
-    fn into_response(self) -> axum::response::Response {
-        let (status, code, message) = match &self {
-            AppError::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "系统错误，请稍后重试"),
-            AppError::TaskNotFound => (StatusCode::NOT_FOUND, "TASK_NOT_FOUND", "任务不存在"),
-            AppError::InvalidTitle(msg) => (StatusCode::BAD_REQUEST, "INVALID_TITLE", msg.as_str()),
-            AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", "请先登录"),
-            AppError::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN", "权限不足"),
-        };
-
-        tracing::error!(error = ?self, "请求错误");
-        (status, Json(ErrorBody { code: code.into(), message: message.into() })).into_response()
-    }
-}
-
-// 统一返回类型
-pub type AppResult<T> = Result<T, AppError>;
+```
+        ▲ 北（输入方：人 / 请求）
+        │
+┌─────────────────────┐
+│   north/ 北向网关     │   表现层：HTTP 处理器、Vue 页面
+│   (driving adapters) │   只做"翻译"，不写业务
+└──────────┬──────────┘
+           │ 只依赖北向端口接口
+┌──────────▼──────────┐
+│ application/ 应用层   │   用例服务：每个方法 = 一个用例
+└──────────┬──────────┘
+           │
+┌──────────▼──────────┐
+│ domain/ 领域层       │   实体 + 不变量 + 端口定义（规则核心）
+└──────────┬──────────┘
+           │ 南向端口（仓储 trait）
+┌──────────▼──────────┐
+│ south/ 南向网关      │   SQL（sqlx）/ HTTP（axios）适配器
+│ (driven adapters)   │   技术细节全在这里
+└──────────┬──────────┘
+           ▼ 南（输出方：数据库 / 外部服务）
+        ▲ 角落还有一个 shared/：被任意层引用，但从不反向依赖业务层
 ```
 
-**Handler 中使用**：
-```rust
-pub async fn create_task(
-    State(state): State<AppState>,
-    Json(payload): Json<CreateTaskRequest>,
-) -> AppResult<Json<Task>> {
-    let title = payload.title.trim().to_owned();
-    if title.is_empty() || title.chars().count() > 120 {
-        return Err(AppError::InvalidTitle("任务标题必须是 1 到 120 个字符。".into()));
-    }
-    let task = db::create_task(&state.db, CreateTaskRequest { title }).await?;
-    Ok(Json(task))
-}
+### 4.1 五块角色对照表
+
+| 角色 | 后端 `src-tauri/src/` | 前端 `src/` | 职责 |
+|------|----------------------|-------------|------|
+| **domain（核心）** | `domain/`：实体 + 南向端口 trait + 领域错误 | `domain/`：实体接口 + 仓储接口 + 校验函数 | **业务不变量**，不含任何框架/HTTP/SQL |
+| **application（核心）** | `application/`：用例服务 + **北向端口** + DTO | `application/`：Pinia store 工厂 | **用例编排**，只面向端口编程 |
+| **south（南向网关）** | `south/`：连接池 + sqlx 仓储实现 | `south/`：axios + HTTP 仓储实现 | **实现南向端口**，SQL/网络只在这里 |
+| **north（北向网关）** | `north/`：axum 处理器/路由/中间件 | `north/`：路由/视图/组件 | **输入翻译**，只依赖北向端口接口 |
+| **shared** | `shared/`：配置/时间/通用错误 | `shared/`：di 组合根/格式化 | 横切关注点 |
+
+### 4.2 三个必须理解的概念
+
+1. **端口（Port）**：接口。分两种——
+   - **南向端口**（业务核心"需要外面提供什么"）：仓储接口，如
+     [domain/repository.rs](./src-tauri/src/domain/repository.rs) 里的 `TaskRepository`。
+   - **北向端口**（业务核心"对外提供什么"）：用例接口，如
+     [application/ports.rs](./src-tauri/src/application/ports.rs) 里的 `TaskUseCase`。
+2. **适配器（Adapter）**：端口的"具体实现"。
+   - 南向适配器：`SqlxTaskRepository`（[south/db/task_repo.rs](./src-tauri/src/south/db/task_repo.rs)）、
+     `HttpTaskRepository`（[south/task-repository.ts](./src/south/task-repository.ts)）。
+   - 北向适配器：axum 的 handler、Vue 的组件——它们调用北向端口接口。
+3. **组合根（Composition Root）**：程序最入口处，"把适配器装进端口"的地方。
+   - 后端：[src-tauri/src/lib.rs](./src-tauri/src/lib.rs)
+   - 前端：[src/shared/di.ts](./src/shared/di.ts)
+
+### 4.3 依赖方向（铁律）
+
 ```
+north → application → domain ← south
+        shared 可被任意层引用，但各层不得反向依赖 shared 之下的业务层
+```
+
+- `north` 只能 import `application` 的**接口**（北向端口），不能 import 具体服务。
+- `application` 只能 import `domain` 的接口（南向端口），不写 SQL。
+- `south` import `domain` 的 trait 并实现之，是唯一能写 SQL / 发请求的地方。
+- 谁都不依赖 `south`/`north` 的具体类。
 
 ---
 
-### 10.7 日志与可观测性
+## 5. 后端代码逐层精读
 
-**当前**：简单的 `tracing_subscriber::fmt::init()`
+> 目录速览：
+> ```
+> src-tauri/src/
+> ├── lib.rs            # 组合根（启动入口）
+> ├── main.rs           # CLI 入口（只调 lib::run()）
+> ├── shared/           # config / time / error
+> ├── domain/           # task / note / repository / error
+> ├── application/      # ports / dto / task_service / note_service / error
+> ├── south/            # db/(mod, task_repo, note_repo)
+> └── north/            # handlers/ routes/ error/ response/ extract/ mod.rs
+> ```
 
-**企业级方案**：
-```rust
-// lib.rs
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+### 5.1 入口：`main.rs` 与 `lib.rs`（组合根）
 
-pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    // 结构化日志 + 环境变量控制日志级别
-    let fmt_layer = fmt::layer()
-        .with_target(false)
-        .with_writer(std::io::stderr);
+- [main.rs](./src-tauri/src/main.rs)：真正的程序起点，只有一行 `axum_tauri_vue_app_lib::run()`。
+- [lib.rs](./src-tauri/src/lib.rs) 的 `run()` 是**组合根**，按固定顺序装配一切：
 
-    let filter_layer = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
-
-    tracing_subscriber::registry()
-        .with(filter_layer)
-        .with(fmt_layer)
-        .init();
-
-    // 可选：集成 OpenTelemetry 导出到 Jaeger/Tempo
-    // let tracer = opentelemetry_jaeger::new_pipeline().install()?;
-    // tracing_opentelemetry::layer().with_tracer(tracer)
-}
+```
+1. 读配置（shared::AppConfig::from_env()）          lib.rs:40
+2. 初始化日志（init_tracing）                       lib.rs:41
+3. 创建数据库连接池 + 跑迁移（south::db::init_pool）  lib.rs:49
+4. 把 sqlx 仓储包成 Arc<dyn 南向端口>
+   → 构造 TaskService/NoteService（实现北向端口）
+   → 包成 Arc<dyn TaskUseCase>/Arc<dyn NoteUseCase> lib.rs:53-60
+5. 组装 north::AppState（持有两个北向端口 + 配置）
+6. 创建 Axum 路由（north::create_router）           lib.rs:63
+7. 绑定随机端口，后台线程启动 HTTP 服务             lib.rs:65-71
+8. 启动 Tauri 窗口，把端口存入 Tauri 状态           lib.rs:73-85
+9. get_api_port command：前端 invoke 这个拿端口     lib.rs:100
 ```
 
-**添加请求日志中间件**：
-```rust
-// api/middleware/logging.rs
-use axum::middleware::Next;
-use axum::response::Response;
-use tower_http::trace::{TraceLayer, TraceId};
-use tracing::Span;
+> 💡 注意第 4 步的"类型再包一层"：`TaskService`（具体类）被存成 `Arc<dyn TaskUseCase>`
+> （接口）。从此**北向网关拿到的永远是接口**，换实现不用改业务代码。
+> `init_tracing`（[lib.rs](./src-tauri/src/lib.rs) 的 `init_tracing`）根据
+> `APP_LOG_FORMAT` 决定输出文本日志还是 JSON 日志。
 
-pub fn add_trace_layer() -> TraceLayer<..., ...> {
-    TraceLayer::new_for_http()
-        .make_span_with(|request: &axum::http::Request<_>| {
-            tracing::info_span!(
-                "http_request",
-                method = ?request.method(),
-                path = request.uri().path(),
-                trace_id = ?request.headers().get("X-Trace-Id").map(|v| v.to_str().unwrap_or("")),
-            )
-        })
-}
-```
+### 5.2 shared 层：谁都能用的工具
 
-**在路由中使用**：
-```rust
-Router::new()
-    .route("/api/tasks", get(list_tasks).post(create_task))
-    .layer(add_trace_layer())
-```
-
----
-
-### 10.8 性能优化
-
-#### 连接池调优
-```rust
-// db.rs
-pub async fn init_pool() -> Result<Pool, sqlx::Error> {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(10)           // 根据并发量调整
-        .min_connections(2)           // 最小连接数
-        .max_lifetime(std::time::Duration::from_secs(30 * 60)) // 30 分钟
-        .idle_timeout(std::time::Duration::from_secs(10 * 60)) // 10 分钟空闲断开
-        .connect("sqlite:data.db?mode=rwc&_journal=WAL")
-        .await?;
-
-    // 启用 WAL 模式（提升并发性能）
-    sqlx::query("PRAGMA journal_mode=WAL")
-        .execute(&pool)
-        .await?;
-
-    sqlx::migrate!("src-tauri/migrations").run(&pool).await?;
-    Ok(pool)
-}
-```
-
-#### 响应缓存
-```rust
-// api/middleware/cache.rs
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
-use std::collections::HashMap;
-use std::sync::Mutex;
-use std::time::Duration;
-
-#[derive(Clone)]
-pub struct CacheState {
-    pub cache: Mutex<HashMap<String, (Vec<u8>, std::time::Instant)>>,
-}
-
-pub async fn cache_middleware(
-    State(cache): State<CacheState>,
-    req: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> impl IntoResponse {
-    let path = req.uri().path().to_string();
-    let now = std::time::Instant::now();
-
-    // 检查缓存（5 分钟有效期）
-    {
-        let cache = cache.cache.lock().unwrap();
-        if let Some((body, created_at)) = cache.get(&path) {
-            if now.duration_since(*created_at) < Duration::from_secs(300) {
-                return Json(serde_json::from_slice(body).unwrap()).into_response();
-            }
-        }
-    }
-
-    // 缓存未命中，执行请求
-    let response = next.run(req).await;
-    let (parts, body) = response.into_parts();
-
-    // 将响应体缓存
-    if let Ok(body_bytes) = axum::body::to_bytes(body, usize::MAX).await {
-        let mut cache = cache.cache.lock().unwrap();
-        cache.insert(path, (body_bytes.to_vec(), now));
-    }
-
-    (parts, axum::body::Body::new(body_bytes)).into_response()
-}
-```
-
----
-
-### 10.9 测试策略
-
-#### 单元测试（Rust）
-```rust
-// 在 db/queries.rs 中添加测试模块
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use sqlx::SqlitePool;
-
-    #[tokio::test]
-    async fn test_create_and_get_task() {
-        let pool = create_test_pool().await;
-        let task = create_task(&pool, CreateTaskRequest {
-            title: "测试任务".to_string(),
-        }).await.unwrap();
-
-        assert_eq!(task.title, "测试任务");
-        assert!(!task.id.is_empty());
-        assert!(!task.completed);
-    }
-
-    async fn create_test_pool() -> SqlitePool {
-        SqlitePool::connect("sqlite::memory:").await.unwrap()
-    }
-}
-```
-
-#### 集成测试
-```rust
-// tests/integration_tests.rs
-use axum::{body::Body, http::Request, Router};
-use http_body_util::BodyExt;
-use sqlx::SqlitePool;
-use tower::ServiceExt;
-
-#[tokio::test]
-async fn test_create_task_api() {
-    let pool = create_test_pool().await;
-    let app = create_router(AppState { db: pool });
-
-    let response = app
-        .oneshot(Request::builder()
-            .method("POST")
-            .uri("/api/tasks")
-            .header("Content-Type", "application/json")
-            .body(Body::from(
-                serde_json::to_string(&json!({"title": "测试"})).unwrap(),
-            ))
-            .unwrap())
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), 200);
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    let task: Task = serde_json::from_slice(&body).unwrap();
-    assert_eq!(task.title, "测试");
-}
-```
-
----
-
-### 10.10 打包与发布
-
-#### Tauri 配置优化
-```json
-{
-  "bundle": {
-    "active": true,
-    "targets": "all",
-    "icon": [...],
-    "windows": {
-      "webviewInstallMode": {
-        "type": "embedBootstrapInstaller"  // 嵌入 WebView2 安装程序
-      }
-    },
-    "resources": [
-      "assets/**/*"  // 打包静态资源
-    ]
-  },
-  "tauri": {
-    "systemTray": {
-      "iconPath": "icons/icon.png",
-      "iconAsTemplate": true
-    },
-    "allowlist": {
-      "all": true,  // 开发时启用所有 API，生产时按需关闭
-      "shell": {
-        "all": false,
-        "open": true
-      }
-    }
+- [shared/mod.rs](./src-tauri/src/shared/mod.rs)：本层出口，集中 re-export。
+- [shared/config.rs](./src-tauri/src/shared/config.rs)：`AppConfig` 结构体 +
+  `from_env()`（见 3.3 的表格）。
+- [shared/time.rs](./src-tauri/src/shared/time.rs)：**全项目唯一的取时间函数**：
+  ```rust
+  pub fn utc_now_rfc3339() -> String {
+      Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
   }
-}
-```
+  ```
+  统一输出如 `2026-08-06T07:30:00.123Z`。任何实体生成时间都走这里，保证时区约定一致。
+- [shared/error.rs](./src-tauri/src/shared/error.rs)：`AppError`（启动期/基础设施错误，
+  不是 HTTP 错误）。HTTP 错误在 `north/error.rs`。
 
-#### CI/CD 配置（GitHub Actions）
-```yaml
-# .github/workflows/release.yml
-name: Release
-on:
-  push:
-    tags:
-      - 'v*'
+### 5.3 domain 层：业务规则核心（最该精读）
 
-jobs:
-  release:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+这一层**没有框架代码**，只有纯 Rust 类型。
 
-    steps:
-      - uses: actions/checkout@v4
+- [domain/mod.rs](./src-tauri/src/domain/mod.rs)：模块出口。
+- [domain/error.rs](./src-tauri/src/domain/error.rs)：`DomainError` 枚举，每条错误消息
+  就是一条业务规则，例如：
+  - `TaskTitleEmpty`：任务标题不能为空
+  - `TaskTitleTooLong`：任务标题最多 120 字符
+  - `TaskNotFound`：任务不存在
+- [domain/task.rs](./src-tauri/src/domain/task.rs)：`Task` 实体。
+  - 字段**私有**，只读 getter（`id()`/`title()`/`completed()`/`created_at()`）。
+  - `Task::new(title)`：**构造时校验不变量**（trim、非空、≤120 字符），生成 UUID 主键和
+    UTC 时间（走 `shared::time`）。失败返回 `DomainError`。
+  - `task.update(...)`：更新动作，同样先校验。
+  - `Task::rebuild(...)`：从数据库原始数据"重建"实体（跳过校验，只给仓储用）。
+  - 这样设计的价值：**非法状态根本造不出来**——这是 DDD 说的"聚合内聚"。
+- [domain/note.rs](./src-tauri/src/domain/note.rs)：`Note` 实体，同理（内容 ≤5000 字符）。
+- [domain/repository.rs](./src-tauri/src/domain/repository.rs)：**南向端口**（接口）+ 查询对象：
+  - `TaskQuery`：查询条件（关键字/完成态/排序/分页）。
+  - `TaskList`：分页返回。
+  - `RepoError`：仓储错误（对 sqlx 错误的透明封装，领域层不认识 sqlx）。
+  - `trait TaskRepository { find_by_id / insert / update / delete / search }`
+  - `trait NoteRepository { find_by_id / insert / update / delete / list_by_task }`
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
+> ⚠️ 重要：这里只有 **trait**，没有 `impl`。实现分散在 `south/`（sqlx）和前端
+> `src/south/`（axios）。"接口在领域层、实现在网关层"是菱形架构的骨架。
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+### 5.4 application 层：用例编排 + 北向端口
 
-      - name: Install dependencies (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libsqlite3-dev libwebkit2gtk-4.1-dev
+- [application/mod.rs](./src-tauri/src/application/mod.rs)：模块出口 + re-export。
+- [application/ports.rs](./src-tauri/src/application/ports.rs)：**北向端口**：
+  ```rust
+  #[async_trait]
+  pub trait TaskUseCase: Send + Sync {
+      async fn list(&self, query: TaskQuery) -> Result<TaskList, ServiceError>;
+      async fn create(&self, dto: CreateTaskDto) -> Result<Task, ServiceError>;
+      async fn update(&self, id: &str, dto: UpdateTaskDto) -> Result<Task, ServiceError>;
+      async fn delete(&self, id: &str) -> Result<(), ServiceError>;
+  }
+  ```
+  北向网关（axum handler）只知道这个接口。
+- [application/dto.rs](./src-tauri/src/application/dto.rs)：**DTO**（Data Transfer Object），
+  纯数据的请求体类型，只做反序列化，**不做校验**（校验在领域实体里）。
+- [application/error.rs](./src-tauri/src/application/error.rs)：`ServiceError`，
+  把 `DomainError`（业务规则）和 `RepoError`（数据访问）统一成一个错误类型。
+- [application/task_service.rs](./src-tauri/src/application/task_service.rs)：`TaskService`。
+  - `TaskService::new(repo: Arc<dyn TaskRepository>)`：构造函数**注入南向端口**（依赖注入）。
+  - `impl TaskUseCase for TaskService`：**实现北向端口**。
+  - 看 `create` 的写法，理解用例的三步曲：
+    ```rust
+    async fn create(&self, dto: CreateTaskDto) -> Result<Task, ServiceError> {
+        let task = Task::new(&dto.title)?;  // 1. 构造领域实体（校验不变量）
+        self.repo.insert(&task).await?;      // 2. 通过南向端口持久化
+        Ok(task)                              // 3. 返回实体
+    }
+    ```
+  - `update` 是"加载 → 变更 → 保存"三步：`find_by_id` → `task.update(...)` → `repo.update(...)`。
+- [application/note_service.rs](./src-tauri/src/application/note_service.rs)：`NoteService`，同款。
 
-      - name: Install dependencies (macOS)
-        if: matrix.os == 'macos-latest'
-        run: |
-          brew install webkitgtk
+### 5.5 south 层：南向网关（SQL 的"家"）
 
-      - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
-```
+- [south/mod.rs](./src-tauri/src/south/mod.rs)：re-export 两个仓储实现。
+- [south/db/mod.rs](./src-tauri/src/south/db/mod.rs)：
+  - `type Pool = SqlitePool`（`south/db/mod.rs:14`）。
+  - `init_pool(config)`：用 `SqliteConnectOptions` 配置 WAL 日志模式 + 忙等待超时，
+    建连接池，然后 `sqlx::migrate!("./migrations").run(&pool)` 自动跑迁移。
+  - 全局唯一一处 `impl From<sqlx::Error> for RepoError`（`south/db/mod.rs:17`）。
+- [south/db/task_repo.rs](./src-tauri/src/south/db/task_repo.rs)：`SqlxTaskRepository`。
+  - `map_task(row)`：sqlx 行 → `Task::rebuild(...)`，把数据库列组装回实体。
+  - `push_conditions` / `sort_clause`：**动态拼接 WHERE/ORDER BY，值一律用参数绑定**，
+    列名走白名单，杜绝 SQL 注入。
+  - `search`：先 COUNT 取 total，再 LIMIT/OFFSET 取当前页（两个查询共用同一组条件，
+    保证 total 和 items 一致）。
+  - `insert`：写全部字段（id/title/completed/created_at 都是实体自带的）。
+- [south/db/note_repo.rs](./src-tauri/src/south/db/note_repo.rs)：`SqlxNoteRepository`，同款。
+
+> 这里你能看到"把技术锁在网关层"的实际效果：领域实体 `Task::new` 生成 UUID 和时间，
+> 仓储只管把它原样写进数据库。
+
+### 5.6 north 层：北向网关（HTTP 翻译）
+
+- [north/mod.rs](./src-tauri/src/north/mod.rs)：`AppState`——
+  ```rust
+  pub struct AppState {
+      pub tasks: Arc<dyn TaskUseCase>,   // 北向端口，不是具体服务！
+      pub notes: Arc<dyn NoteUseCase>,
+      pub config: AppConfig,
+  }
+  ```
+  文件底部还有一个 `#[cfg(test)] mod tests`（8 个测试，见第 11 节）。
+- [north/routes.rs](./src-tauri/src/north/routes.rs)：`create_router` 注册所有路由 +
+  中间件：CORS（宽松，仅本机）、`TimeoutLayer`（请求超时）、`TraceLayer`（每请求日志）。
+- [north/response.rs](./src-tauri/src/north/response.rs)：`ApiResponse<T>`（成功信封）+
+  `ApiResult<T>`（处理器返回类型）。
+- [north/error.rs](./src-tauri/src/north/error.rs)：`ApiError` + `impl From<ServiceError> for ApiError`
+  把应用层错误翻译成 HTTP 状态码：领域校验 → 400，实体不存在 → 404，仓储错误 → 500。
+- [north/extract.rs](./src-tauri/src/north/extract.rs)：`JsonBody<T>` 提取器：JSON 解析失败
+  统一返回 400 + 错误信封。
+- [north/handlers/](./src-tauri/src/north/handlers/)：`health.rs`/`tasks.rs`/`notes.rs`。
+  以 `create_task`（[north/handlers/tasks.rs](./src-tauri/src/north/handlers/tasks.rs)）为例，
+  一个 handler 只做三件事：解参数 → 调北向端口 → 包信封：
+  ```rust
+  pub async fn create_task(
+      State(state): State<AppState>,                     // 1. 取出共享状态
+      JsonBody(payload): JsonBody<CreateTaskDto>,        // 2. 解析请求体 DTO
+  ) -> ApiResult<Task> {
+      let task = state.tasks.create(payload).await?;     // 3. 调北向端口，? 自动转 ApiError
+      Ok(ApiResponse::ok(task))                          // 4. 包成成功信封
+  }
+  ```
+
+### 5.7 API 契约（前后端共同遵守）
+
+- 成功：`200 OK` → `{ "code": 0, "message": "ok", "data": ... }`
+- 失败：`4xx/5xx` → `{ "code": <http状态码>, "message": "人类可读的错误" }`
+- 删除成功：`204 No Content`（无响应体）
+- 所有时间字段是 RFC 3339 UTC（带 `Z`）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/health` | 存活探针 |
+| GET | `/api/tasks` | 筛选/搜索/排序/分页 |
+| POST | `/api/tasks` | 创建任务 |
+| PUT | `/api/tasks/:id` | 部分更新任务 |
+| DELETE | `/api/tasks/:id` | 删除任务 |
+| GET | `/api/tasks/:id/notes` | 任务下的笔记 |
+| POST | `/api/notes` | 创建笔记 |
+| GET / PUT / DELETE | `/api/notes/:id` | 单个笔记的查/改/删 |
 
 ---
 
-## 学习路径建议
+## 6. 一次完整请求的旅程（端到端）
+
+以"**在页面上输入标题，点添加任务**"为例，数据是怎么走完全程的：
 
 ```
-第 1 周：理解整体架构
-  ├─ 运行项目：pnpm tauri dev
-  ├─ 修改 TaskList.vue，观察热重载
-  └─ 在 handlers.rs 加日志，观察输出
-
-第 2 周：深入 Axum
-  ├─ 阅读 routes.rs，理解 Router 链式 API
-  ├─ 添加一个新的 GET /api/stats 端点
-  └─ 实现 JWT 认证中间件
-
-第 3 周：SQLx 进阶
-  ├─ 将 query_as 改为 query_as!（宏）
-  ├─ 添加迁移文件 002
-  └─ 实现搜索和分页功能
-
-第 4 周：前端进阶
-  ├─ 添加虚拟滚动（长列表优化）
-  ├─ 实现拖拽排序
-  └─ 添加单元测试（Vitest）
-
-第 5 周：企业化
-  ├─ 重构错误处理（thiserror）
-  ├─ 添加 OpenTelemetry 追踪
-  └─ 配置 CI/CD 自动发布
+ 你：输入 "写学习笔记" 回车
+ │
+ ▼ 1. 前端组件收到回车事件
+ [north/components/TaskForm.vue] handleSubmit()
+ │
+ ▼ 2. 调用 Pinia store（应用层用例）
+ [application/tasks.ts] store.addTask(title)
+ │    先做前端校验 validateTaskTitle()（和 Rust 同一条规则）
+ │    再调用南向端口接口 repo.create(title)
+ │
+ ▼ 3. 前端南向网关（axios 适配器）
+ [south/task-repository.ts] HttpTaskRepository.create(title)
+ │    经 [south/http.ts] 的 request()：
+ │       · 请求拦截器调 Tauri invoke("get_api_port") 拿到端口，拼 baseURL
+ │       · 发起 POST http://127.0.0.1:随机端口/api/tasks
+ │
+ ▼ 4. 进程内 → Axum 路由
+ [north/routes.rs] → [north/handlers/tasks.rs] create_task
+ │    经过中间件（CORS / Timeout / Trace 日志）
+ │
+ ▼ 5. 北向网关调北向端口接口
+ state.tasks.create(payload)   ← Arc<dyn TaskUseCase>
+ │
+ ▼ 6. 应用层服务（用例编排）
+ [application/task_service.rs] TaskService::create
+ │    Task::new(&dto.title)  ← 领域实体校验 + 生成 UUID/UTC 时间
+ │    repo.insert(&task)      ← 调南向端口
+ │
+ ▼ 7. 南向网关（sqlx 适配器）
+ [south/db/task_repo.rs] SqlxTaskRepository::insert
+ │    INSERT INTO tasks (id, title, completed, created_at) VALUES (?,?,?,?)
+ │
+ ▼ 8. 写入 SQLite 磁盘（data.db）
+ │
+ ▼ 9. 原路返回（结果封装）
+ Task 实体 → ApiResponse::ok(task)  →  HTTP 200  {code:0, data:{...}}
+ → axios 拦截器拆信封返回 data  →  store.addTask 返回 true → 表单清空 → 重新拉列表
 ```
+
+> 关键体会：**第 2→3 步、第 5→7 步**，上层永远只碰接口、不碰实现。这就是"换数据库、
+> 换 HTTP 框架、换 UI 库，业务代码都不动"的原因。
 
 ---
 
-## 关键知识点速查表
+## 7. 前端代码逐层精读
 
-| 概念 | 技术点 | 项目中的位置 |
-|------|--------|-------------|
-| 异步运行时 | Tokio | `lib.rs` 的 `#[tokio::main]` |
-| HTTP 框架 | Axum 0.7 | `src/api/` 目录 |
-| 数据库 ORM | SQLx 0.8 | `src/db/` 目录 |
-| 桌面容器 | Tauri 2 | `src/lib.rs` + `tauri.conf.json` |
-| 前端框架 | Vue 3 (Composition API) | `src/components/` |
-| 类型系统 | TypeScript 5.6 | `src/` + `tsconfig.json` |
-| 构建工具 | Vite 6 | `vite.config.ts` |
-| 包管理 | pnpm | `package.json` + `pnpm-workspace.yaml` |
-| 日志 | Tracing | `lib.rs` 的 `tracing_subscriber::fmt::init()` |
-| UUID | uuid crate | `db/queries.rs` 的 `Uuid::new_v4()` |
-| CORS | tower-http | `api/routes.rs` 的 `CorsLayer` |
-| SQLite 模式 | WAL + RWC | `db.rs` 的连接 URI |
+> 目录速览：
+> ```
+> src/
+> ├── main.ts               # 入口：装 Pinia / Router / Element Plus
+> ├── domain/               # task.ts / note.ts / repository.ts
+> ├── application/          # tasks.ts / notes.ts（store 工厂）
+> ├── south/                # http.ts / task-repository.ts / note-repository.ts
+> ├── north/                # router/ App.vue views/ components/
+> ├── shared/               # di.ts（组合根）/ format.ts（时间格式化）
+> └── styles/main.css       # 全局样式
+> ```
+
+### 7.1 入口 [src/main.ts](./src/main.ts)
+
+创建 Vue 应用 → 依次注册 `Pinia`（状态）、`Router`（路由）、`ElementPlus`（UI 库 + 中文
+locale）→ 全局注册所有 Element Plus 图标 → 挂载。
+
+### 7.2 domain：类型 + 规则 + 端口
+
+- [domain/task.ts](./src/domain/task.ts)：`Task` 接口（与后端字段一一对应）、`TaskFilter`
+  类型、`validateTaskTitle()` 校验函数。`TITLE_MAX_LEN = 120` 与后端 `TITLE_MAX_LEN` 一致。
+- [domain/note.ts](./src/domain/note.ts)：`Note` 接口 + `validateNoteContent()`。
+- [domain/repository.ts](./src/domain/repository.ts)：**南向端口**：
+  ```ts
+  export interface TaskRepository {
+    search(query: TaskQuery): Promise<TaskListResult>;
+    create(title: string): Promise<Task>;
+    update(id: string, input: UpdateTaskInput): Promise<Task>;
+    remove(id: string): Promise<void>;
+  }
+  ```
+  注意：接口的方法签名和 Rust 侧 `TaskUseCase`/`TaskRepository` 几乎对称——两端是同一套设计语言。
+
+> ⚠️ 前端没有真正的"北向端口接口"文件——store 的 `useTasksStore()` hook 就是前端
+> 组件眼中的北向端口；它由 `createTasksStore(repo)` 工厂生成，注入方式与后端一致。
+
+### 7.3 application：Pinia store 工厂
+
+- [application/tasks.ts](./src/application/tasks.ts)：
+  `export function createTasksStore(repo: TaskRepository) { return defineStore("tasks", () => { ... }) }`
+  - 组件用到的所有状态（列表、分页、加载中、行内编辑……）和动作（增删改查、筛选、
+    分页跳转）都在这。
+  - **不 import 任何 axios**，只调用注入进来的 `repo`。
+  - `addTask` 里先 `validateTaskTitle`，再 `repo.create`；`loadTasks` 里拼
+    `{ keyword, completed, sort: "createdAt", sortDir: "desc", limit, offset }` 传给 `repo.search`。
+- [application/notes.ts](./src/application/notes.ts)：同款，管理某任务下的笔记。
+
+> 为什么用"工厂函数 createTasksStore(repo)"而不是直接 defineStore？因为**为了注入依赖**。
+> 测试时你可以传入一个"内存假仓储"，不碰网络。
+
+### 7.4 south：axios 与 HTTP 仓储
+
+- [south/http.ts](./src/south/http.ts)：这是前端最重要的基础设施，必读：
+  - `ApiError`：前端统一错误类。
+  - `getApiBaseUrl()`：**缓存 Promise** 调 `invoke<number>("get_api_port")`，拼出
+    `http://127.0.0.1:<port>/api`。缓存保证只跨 WebView 调一次 Rust。
+  - 请求拦截器：给每个请求设置 baseURL + Content-Type。
+  - 响应拦截器：把后端错误信封 `{code,message}` 转成 `ApiError`。
+  - `request<T>()`：发送请求，拆成功信封直接返回 `data`；204 返回 `undefined`。
+- [south/task-repository.ts](./src/south/task-repository.ts)：`class HttpTaskRepository
+  implements TaskRepository`，把端口方法映射成 axios 请求。前端所有 `/api` 调用就收口在这两个文件。
+- [south/note-repository.ts](./src/south/note-repository.ts)：同款。
+
+### 7.5 north：路由、视图、组件
+
+- [north/router/index.ts](./src/north/router/index.ts)：hash 模式路由（桌面 WebView 刷新
+  子路由安全），视图懒加载（`() => import(...)`），`afterEach` 改页面标题。
+- [north/App.vue](./src/north/App.vue)：外壳（顶栏 + 导航菜单 + `<router-view/>`）。
+- [north/views/TasksView.vue](./src/north/views/TasksView.vue)：任务页 = 表单 + 列表。
+- [north/components/TaskForm.vue](./src/north/components/TaskForm.vue)：输入框 + 添加按钮，
+  回车提交，`maxlength=120`。
+- [north/components/TaskList.vue](./src/north/components/TaskList.vue)：最复杂的组件：
+  Element Plus 表格 + 筛选/搜索/分页 + 行内编辑 + 笔记抽屉。
+- [north/components/NotesPanel.vue](./src/north/components/NotesPanel.vue)：任务下的笔记列表
+  + 新增/编辑/删除。
+- 组件的共性：**只从 `@/shared/di` 拿 store hook，模板里渲染，事件转发给 store 动作**，
+  自己不写业务逻辑。
+
+### 7.6 shared：组合根 + 工具
+
+- [shared/di.ts](./src/shared/di.ts)：**前端组合根**——
+  ```ts
+  export const useTasksStore = createTasksStore(new HttpTaskRepository());
+  export const useNotesStore = createNotesStore(new HttpNoteRepository());
+  ```
+  组件只 import 这里的 hook，永远不直接 `new HttpTaskRepository()`。
+- [shared/format.ts](./src/shared/format.ts)：`formatDateTime()` 用 dayjs 把 UTC 字符串
+  转本地时区显示（`date.local().format(...)`）。
 
 ---
 
-## 延伸阅读推荐
+## 8. 关键技术点
 
-1. **Axum 官方文档**：https://docs.rs/axum
-2. **SQLx 官方文档**：https://docs.rs/sqlx
-3. **Tauri 官方文档**：https://tauri.app/v2/api/
-4. **Vue 3 官方文档**：https://vuejs.org/api/composition-api.html
-5. **SQLite WAL 模式**：https://www.sqlite.org/wal.html
-6. **Rust Async 编程**：https://rust-lang.github.io/async-book/
+### 8.1 时区约定（容易踩坑）
+
+- **存/传永远是 UTC RFC 3339**（`2026-08-06T07:30:00.123Z`）。
+- Rust 侧由 `shared::time::utc_now_rfc3339()` 生成（实体构造时）。
+- 前端展示时用 `shared/format.ts` 的 `dayjs(...).local()` 转本地时区。
+- **禁止**在后端做本地时区换算。这保证了任何时区的用户看到的都是自己的本地时间。
+
+### 8.2 端口发现（前后端握手）
+
+Axum 绑定随机端口（`APP_PORT=0`）→ 端口存进 Tauri 状态 → 前端 `invoke("get_api_port")`
+取到 → 拼 baseURL。这样**不写死端口**，也不会有 CORS 问题（两边都在 127.0.0.1）。
+
+### 8.3 依赖注入（DI）
+
+- 后端：`TaskService::new(repo: Arc<dyn TaskRepository>)`，组合根在 [lib.rs](./src-tauri/src/lib.rs)。
+- 前端：`createTasksStore(repo: TaskRepository)`，组合根在 [shared/di.ts](./src/shared/di.ts)。
+- 好处：测试注入假实现、换实现零改动。
+
+### 8.4 前后端同一套校验规则
+
+- 后端：`Task::new` / `Note::new` 里的不变量。
+- 前端：`validateTaskTitle` / `validateNoteContent`。
+- 后端是"最后防线"（防绕过 UI 的请求），前端是"体验"（快速反馈）。
+
+---
+
+## 9. 数据库与迁移
+
+### 9.1 当前表结构
+
+| 表 | 列 | 说明 |
+|----|----|------|
+| `tasks` | `id`(TEXT PK)、`title`(TEXT NOT NULL)、`completed`(BOOLEAN DEFAULT 0)、`created_at`(TEXT NOT NULL) | 待办任务 |
+| `notes` | `id`(TEXT PK)、`task_id`(TEXT, FK→tasks, ON DELETE CASCADE)、`content`(TEXT NOT NULL)、`created_at`(TEXT NOT NULL) | 任务下的笔记 |
+
+- 外键 `ON DELETE CASCADE`：删任务时，它名下的笔记自动一起删（[002_notes.sql](./src-tauri/migrations/002_notes.sql)）。
+- 数据库文件：`src-tauri/data.db`（WAL 模式，已被 [.gitignore](./.gitignore) 忽略，不该入库）。
+
+### 9.2 迁移管理（改表的标准姿势）
+
+迁移文件放在 [src-tauri/migrations/](./src-tauri/migrations/)，由 `sqlx::migrate!` 在启动时
+自动执行（[south/db/mod.rs](./src-tauri/src/south/db/mod.rs) 的 `init_pool`）。命名规则
+`<序号>_<描述>.sql`，已执行的记录在 `_sqlx_migrations` 表里，下次启动自动跳过。
+
+三个历史迁移：
+1. [001_init.sql](./src-tauri/migrations/001_init.sql)：建 `tasks` 表。
+2. [002_notes.sql](./src-tauri/migrations/002_notes.sql)：建 `notes` 表 + 索引。
+3. [003_timestamps_utc.sql](./src-tauri/migrations/003_timestamps_utc.sql)：时间戳统一为
+   RFC 3339 UTC 的历史修复（文件里的 SQL 大多被注释掉了，只保留说明，因为应用层已经不依赖
+   数据库默认值——时间由 Rust 生成）。
+
+> 💡 看 003 的注释能学到一次真实的生产教训：早期用 `datetime('now')` 存时间，
+> 格式没有时区标记，前端 `new Date("2026-08-06 07:30:00")` 会当成本地时间，导致时区错乱。
+> 所以现在统一成带 `Z` 的格式。
+
+---
+
+## 10. 实战：新增一个功能
+
+下面演示完整的"加功能"流程，以"**给任务加一个优先级 priority（低/中/高）**"为例。
+照此流程，任何新字段/新实体你都能自己加。
+
+### 步骤 1：加迁移（改表）
+
+新建 `src-tauri/migrations/004_task_priority.sql`：
+
+```sql
+ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'medium';
+```
+
+### 步骤 2：后端领域层（加实体字段 + 规则）
+
+编辑 [domain/task.rs](./src-tauri/src/domain/task.rs)：
+- 加 `priority` 字段和 getter `priority()`；
+- 在 `new` 里加默认值 `priority: "medium"`；
+- 在 `update` 里支持更新 `priority`；
+- 在 `rebuild` 的参数列表里加 `priority`；
+- 可加一个 `Priority` 类型或校验函数（限制只能是 low/medium/high）。
+
+### 步骤 3：后端南向网关（同步 SQL）
+
+编辑 [south/db/task_repo.rs](./src-tauri/src/south/db/task_repo.rs)：
+- `SELECT_COLS` 加上 `priority`；
+- `map_task` 里 `Task::rebuild(..., priority, ...)`；
+- `insert` / `update` 的 SQL 加上 `priority` 列。
+
+### 步骤 4：后端应用层（DTO 透传）
+
+编辑 [application/dto.rs](./src-tauri/src/application/dto.rs)：`UpdateTaskDto` 加
+`priority: Option<String>`。`TaskService::update` 把 `dto.priority.as_deref()` 传给
+`task.update(...)` 即可。北向端口接口**不用改**（DTO 变了，方法签名没变）。
+
+### 步骤 5：验证后端
+
+```bash
+cd src-tauri && cargo check && cargo test
+```
+
+### 步骤 6：前端领域层（同步类型）
+
+编辑 [domain/task.ts](./src/domain/task.ts)：`Task` 接口加 `priority: string`。
+
+### 步骤 7：前端应用层（store 透传）
+
+编辑 [application/tasks.ts](./src/application/tasks.ts)：`toggleTask`/`saveEdit`/`addTask`
+如有需要就传 `priority`。一般来说 `repo.update` 的输入里带上即可。
+
+### 步骤 8：前端南向网关（无需改动）
+
+`HttpTaskRepository.update` 已经直接透传 `input` 对象，`{ priority }` 会作为 JSON 发出去。
+
+### 步骤 9：前端北向（加 UI）
+
+- [components/TaskForm.vue](./src/north/components/TaskForm.vue)：加一个"优先级"下拉框。
+- [components/TaskList.vue](./src/north/components/TaskList.vue)：加一列显示优先级。
+
+### 步骤 10：收尾
+
+```bash
+pnpm build      # 前端类型检查 + 打包
+pnpm tauri dev  # 肉眼验证
+```
+
+> 规律总结（一定要记住）：
+> **改字段 = 动 4 处**：`domain`（实体/类型）→ `south`（SQL/HTTP 映射）→ `application`
+> （DTO/store）→ `north`（UI/Handler 若需要）。两端完全对称，且方向永远是单向的。
+
+---
+
+## 11. 测试策略
+
+后端测试命令：`cd src-tauri && cargo test`（8 个用例，全部通过）：
+
+1. **迁移测试**（[south/db/mod.rs](./src-tauri/src/south/db/mod.rs) 的 `migrations_apply_cleanly`）：
+   用临时数据库文件跑迁移，断言三张表存在。
+2. **API 契约测试**（[north/mod.rs](./src-tauri/src/north/mod.rs) 的 `mod tests`）：
+   用真实 sqlx 仓储 + 应用层服务组装一个 `AppState`，用 `tower::ServiceExt::oneshot`
+   直接调 Axum 路由（**不真的开端口**），断言：
+   - `/api/health` 返回统一信封；
+   - 创建任务返回带 `Z` 结尾的 UTC 时间；
+   - 空标题 / 超长标题 / 缺字段 → 400；
+   - 分页 total/items 正确；
+   - 删除不存在的任务 → 404。
+
+前端暂无自动化测试（可用 `vitest + @vue/test-utils` 补，注入假仓储即可）。
+
+---
+
+## 12. 常见问题与排错
+
+| 症状 | 原因 / 排查方向 |
+|------|-----------------|
+| `cargo check` 报错 | 看是否是依赖版本问题；`cargo update` 或看 [Cargo.toml](./src-tauri/Cargo.toml)。 |
+| 前端编译报"找不到模块 @/xxx" | 路径写错了，`@` = `src/`（[vite.config.ts](./vite.config.ts) + [tsconfig.json](./tsconfig.json)）。 |
+| 窗口打开但列表空/报错 | 看 Rust 终端日志（TraceLayer 会打印请求）；或直接浏览器打开 `pnpm dev` 调试。 |
+| 数据没保存 | `data.db` 在 `src-tauri/` 目录下；确认 WAL 文件（`data.db-wal`）存在。 |
+| 时间显示不对 | 确认后端返回带 `Z`；前端必须走 `formatDateTime`。 |
+| 改了表但重启没变化 | 迁移只跑一次，改动要**新增**迁移文件，不能改旧的。 |
+| 端口冲突 | `APP_PORT` 默认随机；如固定端口冲突可换一个。 |
+| Windows 编译缺链接器 | 装 VS Build Tools（C++ 桌面开发）。 |
+
+---
+
+## 13. 术语表
+
+| 术语 | 含义 |
+|------|------|
+| **菱形/六边形架构** | 领域核心居中、南北网关接线、可替换适配器的架构风格 |
+| **端口（Port）** | 接口。南向端口=仓储接口；北向端口=用例接口 |
+| **适配器（Adapter）** | 端口的实现。如 `SqlxTaskRepository`、axum handler |
+| **组合根（Composition Root）** | 装配依赖的地方：后端 `lib.rs`、前端 `shared/di.ts` |
+| **依赖注入（DI）** | 把实现传给需要它的人，而不是让它自己 new |
+| **实体 / 聚合** | 带身份和业务规则的对象（`Task`/`Note`） |
+| **不变量（Invariant）** | 必须永远成立的状态规则（如标题 1~120 字符） |
+| **DTO** | 传输用的纯数据对象，不做校验 |
+| **用例（Use Case）** | 一个用户可执行的操作（如"创建任务"） |
+| **信封（Envelope）** | 统一响应结构 `{code, message, data}` |
+| **迁移（Migration）** | 版本化的表结构变更脚本 |
+| **WAL** | SQLite 日志模式，读写并发更好 |
+| **RFC 3339** | 带时区 ISO 时间格式，如 `2026-08-06T07:30:00.123Z` |
+
+---
+
+## 14. 推荐学习路径
+
+按顺序读完即可独立开发：
+
+1. **先跑起来**：`pnpm install` → `pnpm tauri dev`，亲手点一遍任务/笔记功能。
+2. **读 [README.md](./README.md) 与本文第 4 节**：建立架构心智模型。
+3. **读第 5 节后端**，重点：`domain/task.rs` → `application/task_service.rs` →
+   `south/db/task_repo.rs` → `north/handlers/tasks.rs` → `lib.rs`。
+4. **读第 6 节**"一次请求的旅程"，把这个时序图默写出来。
+5. **读第 7 节前端**，重点：`south/http.ts` → `application/tasks.ts` →
+   `shared/di.ts` → `north/components/TaskList.vue`。
+6. **动手做第 10 节的实战**（给任务加 `priority`），全程自己完成。
+7. **学测试**：读懂 `north/mod.rs` 里的 8 个测试，试着新增 1 个。
+8. 想深入时去读官方文档：Vue 3 组合式 API、Pinia、Axum、sqlx、Tauri 2。
+
+> 最后一句心法：**这个项目的每一处"绕弯"（接口、注入、网关）都是为了"替换时不伤业务"**。
+> 当你觉得"为什么不直接调用"时，想想"如果我要把 SQLite 换成 Postgres、把桌面改成 Web、
+> 加一个 CLI"，就不觉得绕了。
+
+---
+
+*文档由 AI 根据仓库现状生成。若代码有演进，以仓库代码为准；架构类文件建议先看
+[CLAUDE.md](./CLAUDE.md) 获取给 AI 助手的关键约定。*

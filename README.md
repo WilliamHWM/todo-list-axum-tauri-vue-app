@@ -4,6 +4,9 @@
 
 前端不直接访问数据库：通过 Tauri command 拿到 Axum 的随机本地端口，再经 axios 以统一信封契约访问 `/api`，最终由 SQLx 写入 SQLite。
 
+> 📖 **新手入门**：想系统学习本项目（逐层精读、可跳转代码、实战加功能），请阅读
+> [LEARNING_GUIDE.md](./LEARNING_GUIDE.md)。
+
 ## 技术栈
 
 | 层 | 技术 |
