@@ -10,7 +10,9 @@ pub mod note_service;
 pub mod ports;
 pub mod task_service;
 
-pub use dto::{CreateNoteDto, CreateTaskDto, UpdateNoteDto, UpdateTaskDto};
+pub use dto::{
+    CreateNoteDto, CreateTaskDto, CreateTaskWithNoteDto, UpdateNoteDto, UpdateTaskDto,
+};
 pub use error::ServiceError;
 pub use note_service::NoteService;
 pub use ports::{NoteUseCase, TaskUseCase};

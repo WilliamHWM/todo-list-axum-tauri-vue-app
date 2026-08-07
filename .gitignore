@@ -27,4 +27,3 @@ src-tauri/data.db-shm
 *.njsproj
 *.sln
 *.sw?
-src-tauri/data.db

@@ -8,3 +8,4 @@ pub mod db;
 
 pub use db::note_repo::SqlxNoteRepository;
 pub use db::task_repo::SqlxTaskRepository;
+pub use db::uow::SqlxUnitOfWorkFactory;

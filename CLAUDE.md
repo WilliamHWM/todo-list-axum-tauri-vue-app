@@ -49,7 +49,7 @@ cross-cutting concerns.
 |-------|--------------------------|-------------------|----------------|
 | **domain** (core) | `domain/` — entities (`Task`/`Note` with `new`/`update` invariants), **south ports** `TaskRepository`/`NoteRepository` traits, `TaskQuery`/`TaskList`, `DomainError`, `RepoError` | `domain/` — entity interfaces, **south ports** repository interfaces, `validateTaskTitle`/`validateNoteContent` | Business invariants; no framework/HTTP/SQL knowledge |
 | **application** (core) | `application/` — use-case services + **north ports** `TaskUseCase`/`NoteUseCase` (`ports.rs`), DTOs, `ServiceError` | `application/` — Pinia store factories `createTasksStore(repo)`/`createNotesStore(repo)` | Use-case orchestration; depends only on domain south ports via DI, exposes north ports |
-| **south** (gateway) | `south/` — sqlx pool + migration, `SqlxTaskRepository`/`SqlxNoteRepository` | `south/` — axios (`http.ts`), `HttpTaskRepository`/`HttpNoteRepository` | Implements domain south ports; all SQL / HTTP details live here |
+| **south** (gateway) | `south/` — sqlx pool + migration, `SqlxTaskRepository`/`SqlxNoteRepository`, `SqlxUnitOfWorkFactory` (transactions) | `south/` — axios (`http.ts`), `HttpTaskRepository`/`HttpNoteRepository` | Implements domain south ports; all SQL / HTTP details live here |
 | **north** (gateway) | `north/` — axum handlers, routes, middleware, `ApiError`/`ApiResponse`/`JsonBody`, `AppState` (holds `Arc<dyn TaskUseCase>`/`Arc<dyn NoteUseCase>`) | `north/` — router, `App.vue`, views, components | HTTP / UI translation only; depends only on application north ports |
 | **shared** | `shared/` — `config.rs`, `time.rs`, `error.rs` | `shared/` — `di.ts` (frontend composition root), `format.ts` | Cross-cutting concerns any layer may use |
 
@@ -114,7 +114,7 @@ Key insight: Axum binds to a random local port (`127.0.0.1:0`), Tauri captures t
 | Backend (Shared) | `src-tauri/src/shared/` | `config.rs` (`APP_*` env), `time.rs` (UTC RFC3339), `error.rs` (`AppError`) |
 | Backend (Domain) | `src-tauri/src/domain/` | Entities (`task.rs`/`note.rs`), south ports (`repository.rs`) + `TaskQuery`/`TaskList`, `DomainError`/`RepoError` |
 | Backend (Application) | `src-tauri/src/application/` | `TaskService`/`NoteService` (use cases), north ports (`ports.rs`), DTOs, `ServiceError` |
-| Backend (South) | `src-tauri/src/south/db/` | Pool init (WAL) + `sqlx::migrate!`, `SqlxTaskRepository`/`SqlxNoteRepository` |
+| Backend (South) | `src-tauri/src/south/db/` | Pool init (WAL) + `sqlx::migrate!`, `SqlxTaskRepository`/`SqlxNoteRepository`, `SqlxUnitOfWorkFactory` + `SqlxUnitOfWork` (transactions via `UnitOfWork`/`UnitOfWorkFactory` domain ports) |
 | Backend (North) | `src-tauri/src/north/` | `AppState { tasks: Arc<dyn TaskUseCase>, notes: Arc<dyn NoteUseCase>, config }`, handlers, routes, `ApiError`/`ApiResponse`/`JsonBody` |
 | Migrations | `src-tauri/migrations/` | Versioned SQL, tracked by `_sqlx_migrations` |
 | Config | `package.json`, `vite.config.ts` | Frontend scripts, `@` alias, vendor chunks |

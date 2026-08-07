@@ -49,9 +49,10 @@ pub async fn run() {
 
     // --- 装配：南向适配器 → 用例服务（北向端口实现）→ 北向网关状态 -----------------
     let task_repo = Arc::new(south::SqlxTaskRepository::new(pool.clone()));
-    let note_repo = Arc::new(south::SqlxNoteRepository::new(pool));
+    let note_repo = Arc::new(south::SqlxNoteRepository::new(pool.clone()));
+    let uow = Arc::new(south::SqlxUnitOfWorkFactory::new(pool));
     let tasks: Arc<dyn application::TaskUseCase> =
-        Arc::new(application::TaskService::new(task_repo));
+        Arc::new(application::TaskService::new(task_repo, uow));
     let notes: Arc<dyn application::NoteUseCase> =
         Arc::new(application::NoteService::new(note_repo));
     let state = north::AppState {
@@ -78,14 +79,13 @@ pub async fn run() {
     });
 
     // --- Tauri -----------------------------------------------------------------
-    let context = tauri::generate_context!();
     tauri::Builder::<tauri::Wry>::new()
         .invoke_handler(tauri::generate_handler![get_api_port])
         .setup(move |app| {
             app.manage(port);
             Ok(())
         })
-        .run(context)
+        .run(tauri::generate_context!())
         .unwrap_or_else(|e| {
             panic!("error while running tauri application: {e}");
         });

@@ -8,8 +8,10 @@ pub mod error;
 pub mod note;
 pub mod repository;
 pub mod task;
+pub mod uow;
 
 pub use error::DomainError;
 pub use note::Note;
 pub use repository::{NoteRepository, RepoError, TaskList, TaskQuery, TaskRepository};
 pub use task::Task;
+pub use uow::{UnitOfWork, UnitOfWorkFactory};

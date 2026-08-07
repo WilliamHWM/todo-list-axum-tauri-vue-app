@@ -4,7 +4,7 @@ use super::super::error::ApiError;
 use super::super::extract::JsonBody;
 use super::super::response::{ApiResponse, ApiResult};
 use super::super::AppState;
-use crate::application::{CreateTaskDto, UpdateTaskDto};
+use crate::application::{CreateTaskDto, CreateTaskWithNoteDto, UpdateTaskDto};
 use crate::domain::{Task, TaskList, TaskQuery};
 use axum::{
     extract::{Path, Query, State},
@@ -31,6 +31,17 @@ pub async fn create_task(
     JsonBody(payload): JsonBody<CreateTaskDto>,
 ) -> ApiResult<Task> {
     let task = state.tasks.create(payload).await?;
+    Ok(ApiResponse::ok(task))
+}
+
+/// POST /api/tasks/with-note
+///
+/// 在同一数据库事务里创建任务并附带首条笔记：任务或笔记任一步失败都会整体回滚。
+pub async fn create_task_with_note(
+    State(state): State<AppState>,
+    JsonBody(payload): JsonBody<CreateTaskWithNoteDto>,
+) -> ApiResult<Task> {
+    let task = state.tasks.create_task_with_note(payload).await?;
     Ok(ApiResponse::ok(task))
 }
 

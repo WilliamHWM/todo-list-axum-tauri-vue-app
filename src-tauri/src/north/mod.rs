@@ -30,7 +30,7 @@ pub struct AppState {
 mod tests {
     use super::*;
     use crate::south::db::init_pool;
-    use crate::south::{SqlxNoteRepository, SqlxTaskRepository};
+    use crate::south::{SqlxNoteRepository, SqlxTaskRepository, SqlxUnitOfWorkFactory};
     use axum::{
         body::{to_bytes, Body},
         http::{Request, StatusCode},
@@ -52,9 +52,10 @@ mod tests {
             db_max_connections: 5,
         };
         let pool = init_pool(&config).await.expect("init_pool failed");
-        let tasks: Arc<dyn TaskUseCase> = Arc::new(crate::application::TaskService::new(Arc::new(
-            SqlxTaskRepository::new(pool.clone()),
-        )));
+        let tasks: Arc<dyn TaskUseCase> = Arc::new(crate::application::TaskService::new(
+            Arc::new(SqlxTaskRepository::new(pool.clone())),
+            Arc::new(SqlxUnitOfWorkFactory::new(pool.clone())),
+        ));
         let notes: Arc<dyn NoteUseCase> = Arc::new(crate::application::NoteService::new(Arc::new(
             SqlxNoteRepository::new(pool),
         )));
@@ -163,5 +164,46 @@ mod tests {
             .unwrap();
         let (status, _) = json_response(app, request).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn create_task_with_note_commits_atomically() {
+        let app = create_router(test_state().await);
+        let (status, body) = json_response(
+            app.clone(),
+            post_json(
+                "/api/tasks/with-note",
+                r#"{"title":"带首条笔记的任务","content":"第一条笔记"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["title"], "带首条笔记的任务");
+
+        // 任务与笔记都在同一个事务里提交成功。
+        let task_id = body["data"]["id"].as_str().unwrap().to_string();
+        let (status, notes) = json_response(app, get(&format!("/api/tasks/{task_id}/notes"))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(notes["data"].as_array().unwrap().len(), 1);
+        assert_eq!(notes["data"][0]["content"], "第一条笔记");
+    }
+
+    #[tokio::test]
+    async fn create_task_with_note_rolls_back_on_invalid_content() {
+        let app = create_router(test_state().await);
+        let (status, _) = json_response(
+            app.clone(),
+            post_json(
+                "/api/tasks/with-note",
+                r#"{"title":"会被回滚的任务","content":"   "}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // 笔记内容非法 → 整个事务回滚 → 任务不应被创建。
+        let (status, body) = json_response(app, get("/api/tasks")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["total"], 0, "回滚后不应残留孤儿任务");
     }
 }

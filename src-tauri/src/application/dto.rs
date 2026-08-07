@@ -12,6 +12,14 @@ pub struct CreateTaskDto {
     pub title: String,
 }
 
+/// 原子创建任务并附带首条笔记的输入。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateTaskWithNoteDto {
+    pub title: String,
+    pub content: String,
+}
+
 /// 更新任务的输入（字段全部可选，但至少提供一个）。
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -2,6 +2,7 @@
 
 pub mod note_repo;
 pub mod task_repo;
+pub mod uow;
 
 use crate::shared::{AppConfig, AppError};
 use sqlx::sqlite::{
