@@ -1,6 +1,6 @@
-# Tauri + Axum + Vue 企业级桌面应用
+# Tauri + Axum + Vue 企业级桌面应用（DDD 分层）
 
-一个企业级结构的桌面应用骨架：将 **Tauri 2**（桌面壳）、**Axum**（嵌入式 HTTP 服务）、**Vue 3 + TypeScript**（前端 UI）与 **SQLite + SQLx**（本地存储）组合在同一个进程内。
+一个企业级结构的桌面应用骨架：将 **Tauri 2**（桌面壳）、**Axum**（嵌入式 HTTP 服务）、**Vue 3 + TypeScript**（前端 UI）与 **SQLite + SQLx**（本地存储）组合在同一个进程内，前后端统一采用 **DDD 五层**（domain / application / infrastructure / presentation / shared）架构。
 
 前端不直接访问数据库：通过 Tauri command 拿到 Axum 的随机本地端口，再经 axios 以统一信封契约访问 `/api`，最终由 SQLx 写入 SQLite。
 
@@ -13,51 +13,56 @@
 | 前端 | Vue 3 + TypeScript + Vite + Pinia + Vue Router + Element Plus |
 | 时间库 | chrono (Rust) / dayjs (前端) |
 
+## DDD 分层（前后端同构）
+
+| 层 | Rust（src-tauri/src） | 前端（src） | 职责 |
+|----|----------------------|-------------|------|
+| **domain** | `domain/`（实体 + 仓储 trait 端口 + `DomainError`） | `domain/`（实体 + 仓储接口 + 校验函数） | 业务不变量；不依赖框架，不关心 HTTP/SQL |
+| **application** | `application/`（`TaskService`/`NoteService` + DTO + `ServiceError`） | `application/`（Pinia store 工厂） | 用例编排；面向仓储端口编程，依赖注入 |
+| **infrastructure** | `infrastructure/`（sqlx 连接池 + 仓储实现） | `infrastructure/`（axios 实例 + HTTP 仓储实现） | 实现领域端口；所有 SQL / 网络细节只出现在这里 |
+| **presentation** | `presentation/`（axum handlers / 路由 / 中间件 / `ApiError`） | `presentation/`（router / views / components / App.vue） | HTTP 与 UI 翻译；不包含业务规则 |
+| **shared** | `shared/`（config / time / AppError） | `shared/`（di 组合根 / format） | 跨层横切关注点 |
+
+关键约定：**组合根**（后端 `lib.rs`、前端 `shared/di.ts`）把基础设施实现注入到应用层端口；领域层定义不变量与端口，实现细节可替换、可测试（例如测试中注入内存仓储）。
+
 ## 架构与数据流
 
 ```text
-Vue 组件 → stores (Pinia) → src/api (axios) → Tauri invoke(get_api_port)
-                                                    ↓
-                                          Axum /api/* → db (SQLx) → SQLite
+Vue 组件 → presentation → application (Pinia store) → domain 端口 (仓储接口)
+                                                            ↓ 组合根注入
+                                               infrastructure (axios) → /api
+                                                            ↓
+后端: presentation (axum handler) → application (service) → domain 端口 (trait)
+                                                            ↓ 组合根注入
+                                               infrastructure (sqlx) → SQLite
 ```
 
-- **状态管理**：业务逻辑集中在 Pinia store（`src/stores/`），组件只负责渲染与事件转发。
-- **路由**：hash 模式 + 视图懒加载（`src/router/`），桌面 WebView 刷新子路由安全。
+- **输入校验**：Rust 端移除 `validator` 声明式校验，业务不变量由领域实体在 `Task::new` / `Note::new` / `update` 中校验（标题 1–120 字符、笔记 1–5000 字符等）；前端 `domain/` 提供同名校验函数，两端规则一致。
 - **API 契约**：所有 2xx 响应统一为 `{ code, message, data }` 信封；错误响应为 `{ code, message }`。axios 拦截器负责拆信封与错误规范化。
 - **时间约定**：存储与传输统一 **UTC（RFC 3339，带 `Z`）**；前端用 dayjs 转本地时区展示，杜绝时区偏移。
 
 ## 目录结构
 
 ```
-src/                          # 前端
-  api/                        #   axios 封装 + 按资源分组的 API
-  components/                 #   业务组件（TaskForm / TaskList / NotesPanel）
-  router/                     #   vue-router（hash + 懒加载）
-  stores/                     #   Pinia store（tasks / notes）
+src/                          # 前端（DDD 五层）
+  application/                #   Pinia store 工厂（tasks / notes），面向端口编程
+  domain/                     #   实体（task / note）+ 仓储接口 + 校验函数
+  infrastructure/             #   http.ts（axios + 端口发现 + 信封）+ HTTP 仓储实现
+  presentation/               #   router / App.vue / views / components
+  shared/                     #   di.ts（前端组合根）+ format.ts（时间格式化）
   styles/                     #   全局样式
-  types/                      #   领域模型类型（与 Rust 契约对应）
-  utils/                      #   工具（时间格式化等）
-  views/                      #   路由视图（TasksView / AboutView）
-  main.ts / App.vue
+  main.ts                     #   入口：Pinia / Router / Element Plus
 
-src-tauri/                    # 后端（Rust）
+src-tauri/                    # 后端（Rust，DDD 五层）
   migrations/                 #   版本化迁移（sqlx migrate! 管理）
   src/
-    lib.rs                    #   入口：配置 → 日志 → DB → Axum → Tauri
+    lib.rs                    #   组合根：配置 → 日志 → 连接池 → 仓储注入 → Axum → Tauri
     main.rs                   #   CLI 入口
-    config.rs                 #   环境变量配置（APP_*）
-    error.rs                  #   应用级错误（thiserror）
-    api/
-      mod.rs                  #   AppState（db + config）
-      error.rs                #   HTTP 错误（ApiError → 信封）
-      response.rs             #   统一响应信封（ApiResponse）
-      extract.rs              #   ValidatedJson 校验提取器
-      routes.rs               #   路由 + 中间件（CORS / Timeout / Trace）
-      handlers/               #   按业务拆分的 handler（health / tasks / notes）
-    db/
-      mod.rs                  #   连接池（WAL）+ 迁移
-      tasks.rs / notes.rs     #   仓储层：所有 SQL 集中管理
-    models/                   #   领域模型 + validator 校验注解
+    shared/                   #   config.rs / time.rs / error.rs（跨层约定）
+    domain/                   #   实体（task / note）+ 仓储 trait 端口 + DomainError
+    application/              #   用例服务（TaskService / NoteService）+ DTO + ServiceError
+    infrastructure/           #   db/mod.rs（连接池 + 迁移）+ task_repo / note_repo 适配器
+    presentation/             #   handlers / routes / error / response / extract / AppState
 ```
 
 ## 运行
@@ -97,7 +102,7 @@ pnpm tauri build              # 全量发布构建（前端 + 打包安装包）
 - 失败：`4xx/5xx`，`{ "code": <http status>, "message": "人类可读的错误信息" }`
 - 删除成功：`204 No Content`（无响应体）
 - 时间戳：`created_at` 为 RFC 3339 UTC 字符串，例如 `2026-08-06T07:30:00.000Z`
-- 输入校验：DTO 使用 `validator` 声明式校验，`ValidatedJson` 提取器自动拦截返回 400
+- 输入校验：领域实体构造/变更时校验不变量；表现层 `JsonBody` 提取器把 JSON 解析失败映射为 400 + 错误信封
 
 ### 主要端点
 
@@ -120,7 +125,8 @@ pnpm tauri build              # 全量发布构建（前端 + 打包安装包）
 
 ## 开发约定
 
-1. **新增业务**：前端加 `types/` 类型 + `api/` 接口 + `stores/` 状态 + `views/`/`components/` 视图；后端加 `models/` + `db/` 仓储 + `api/handlers/` handler。
-2. **改表结构**：新增 `migrations/<版本>_<描述>.sql`，同步 Rust 模型与前端类型。
-3. **时区**：永远存/传 UTC，不要在后端做本地时区转换；展示时由前端转本地。
-4. **错误**：仓储层抛 `sqlx::Error`，handler 层经 `ApiError` 转为统一信封。
+1. **新增业务**：前端 `domain/` 定义实体/端口 → `infrastructure/` 实现 → `application/` 加 store 工厂 → `presentation/` 加视图；后端 `domain/` 定义实体/trait → `infrastructure/` 实现 → `application/` 加服务 → `presentation/` 加 handler/路由。
+2. **依赖方向**：presentation → application → domain（← infrastructure 实现）；shared 可被任意层引用，但不要反向依赖。
+3. **改表结构**：新增 `migrations/<版本>_<描述>.sql`，同步后端 `infrastructure` 仓储与前端 `domain` 类型。
+4. **时区**：永远存/传 UTC，不要在后端做本地时区转换；展示时由前端转本地。
+5. **错误**：领域错误（`DomainError`）/ 仓储错误（`RepoError`）由应用层统一为 `ServiceError`，表现层映射为统一信封。

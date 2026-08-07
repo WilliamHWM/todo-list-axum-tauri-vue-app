@@ -1,32 +1,34 @@
-//! Axum + Tauri integration entry point.
+//! Axum + Tauri 组合根。
+//!
+//! 按 DDD 分层组装：`shared`（跨层约定）→ `infrastructure`（连接池 + 仓储实现）
+//! → `application`（用例服务）→ `presentation`（Axum 路由）。本文件只负责把各层
+//! 装配起来，不包含业务逻辑。
 //!
 //! Boot order:
-//! 1. Initialise tracing (optional JSON output for log collectors).
-//! 2. Load `AppConfig` from environment variables.
-//! 3. Open the SQLite pool and run pending migrations.
-//! 4. Bind the Axum router to a random localhost port (default) and spawn the
-//!    HTTP server on a background Tokio task.
-//! 5. Hand control to Tauri's event loop. The chosen port is stored in Tauri
-//!    state so the Vue frontend can discover it via `get_api_port`.
+//! 1. 初始化 tracing（可选 JSON 输出）。
+//! 2. 从环境变量加载 `AppConfig`。
+//! 3. 打开 SQLite 连接池并应用迁移（infrastructure）。
+//! 4. 构造应用层服务并注入仓储适配器（application + infrastructure）。
+//! 5. 绑定 Axum 到随机回环端口，后台任务托管 HTTP 服务。
+//! 6. 交给 Tauri 事件循环；端口存入 Tauri 状态，前端通过 `get_api_port` 发现。
 
-pub(crate) mod api;
-pub(crate) mod config;
-pub(crate) mod db;
-pub(crate) mod error;
-pub(crate) mod models;
+mod application;
+mod domain;
+mod infrastructure;
+mod presentation;
+mod shared;
 
-use api::create_router;
-use api::AppState;
+use std::sync::Arc;
 use tauri::Manager;
 use tokio::net::TcpListener;
 
-/// Start the embedded Axum server and the Tauri app in the same process.
+/// 启动内嵌 Axum 服务器与 Tauri 应用（同一进程）。
 ///
-/// The function never returns in the normal flow because `app.run()` blocks.
+/// 正常流程下不返回，因为 `app.run()` 阻塞。
 #[tokio::main]
 pub async fn run() {
-    // --- Configuration -----------------------------------------------------
-    let config = config::AppConfig::from_env();
+    // --- 跨层配置 -----------------------------------------------------------
+    let config = shared::AppConfig::from_env();
     init_tracing(&config);
     tracing::info!(
         log_level = %config.log_level,
@@ -34,19 +36,23 @@ pub async fn run() {
         "application configuration loaded"
     );
 
-    // --- Database -----------------------------------------------------------
-    let pool = db::init_pool(&config).await.unwrap_or_else(|e| {
+    // --- 基础设施：连接池 + 迁移 ----------------------------------------------
+    let pool = infrastructure::db::init_pool(&config).await.unwrap_or_else(|e| {
         panic!("failed to initialize SQLite database: {e}");
     });
     tracing::info!("database pool initialized and migrations applied");
 
-    let state = AppState {
-        db: pool,
+    // --- 装配：仓储实现 → 应用层服务 → 表现层状态 -------------------------------
+    let task_repo = Arc::new(infrastructure::SqlxTaskRepository::new(pool.clone()));
+    let note_repo = Arc::new(infrastructure::SqlxNoteRepository::new(pool));
+    let state = presentation::AppState {
+        tasks: application::TaskService::new(task_repo),
+        notes: application::NoteService::new(note_repo),
         config: config.clone(),
     };
 
-    // --- API server ---------------------------------------------------------
-    let app = create_router(state);
+    // --- API 服务器 -----------------------------------------------------------
+    let app = presentation::create_router(state);
     let listener = TcpListener::bind((config.host.as_str(), config.port))
         .await
         .unwrap_or_else(|e| panic!("failed to bind local API port: {e}"));
@@ -62,7 +68,7 @@ pub async fn run() {
         }
     });
 
-    // --- Tauri ------------------------------------------------------------
+    // --- Tauri -----------------------------------------------------------------
     let context = tauri::generate_context!();
     tauri::Builder::<tauri::Wry>::new()
         .invoke_handler(tauri::generate_handler![get_api_port])
@@ -74,17 +80,15 @@ pub async fn run() {
         .unwrap_or_else(|e| {
             panic!("error while running tauri application: {e}");
         });
-    // Abort the HTTP server (reached only if the Tauri event loop is
-    // artificially terminated, e.g. in tests).
+    // 仅在 Tauri 事件循环被人工终止时（例如测试）才会到达，用于停止 HTTP 服务。
     axum_handle.abort();
 }
 
-/// Initialise structured logging.
+/// 初始化结构化日志。
 ///
-/// The filter respects the `RUST_LOG` env var first, falling back to the
-/// `APP_LOG_LEVEL` config. Set `APP_LOG_FORMAT=json` to emit JSON lines for
-/// log aggregation tools.
-fn init_tracing(config: &config::AppConfig) {
+/// 优先读取 `RUST_LOG`，否则回退到 `APP_LOG_LEVEL`；`APP_LOG_FORMAT=json` 输出
+/// JSON 行便于日志采集。
+fn init_tracing(config: &shared::AppConfig) {
     use tracing_subscriber::{fmt, EnvFilter};
 
     let filter =
@@ -97,9 +101,9 @@ fn init_tracing(config: &config::AppConfig) {
     }
 }
 
-/// Return the port the embedded Axum server is listening on.
+/// 返回内嵌 Axum 服务器监听的端口。
 ///
-/// Called from the Vue frontend via `invoke("get_api_port")`.
+/// 前端通过 `invoke("get_api_port")` 调用。
 #[tauri::command]
 fn get_api_port(state: tauri::State<'_, u16>) -> u16 {
     *state
