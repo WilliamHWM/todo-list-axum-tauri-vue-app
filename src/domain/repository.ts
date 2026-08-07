@@ -3,50 +3,33 @@
  *
  * 应用层（Pinia store）只面向这里的接口编程；具体 HTTP 实现位于
  * `south/`，由组合根注入。
+ *
+ * 数据载体类型（`Task` / `Note` / `TaskQuery` / `TaskList` / DTO）全部来自
+ * `./generated.ts`（typeshare 从后端 Rust 结构体生成），保证前后端契约一致；
+ * 本文件只保留"端口接口"这一类前端专属抽象。
  */
 
+import type { TaskQuery, TaskList } from "./generated";
+import type { UpdateTaskDto, CreateNoteDto, UpdateNoteDto } from "./generated";
 import type { Task } from "./task";
 import type { Note } from "./note";
 
+export type { TaskQuery, TaskList };
 export type { Task } from "./task";
 export type { Note } from "./note";
 
-/** 任务列表查询条件（`GET /api/tasks` 查询参数）。 */
-export interface TaskQuery {
-  keyword?: string;
-  completed?: boolean;
-  sort?: "createdAt" | "title";
-  sortDir?: "asc" | "desc";
-  limit?: number;
-  offset?: number;
-}
+/** `PUT /api/tasks/:id` 的请求体（由 typeshare 从 `UpdateTaskDto` 生成）。 */
+export type UpdateTaskInput = UpdateTaskDto;
 
-/** 分页后的任务列表。 */
-export interface TaskListResult {
-  items: Task[];
-  total: number;
-}
+/** `POST /api/notes` 的请求体（由 typeshare 从 `CreateNoteDto` 生成）。 */
+export type CreateNoteInput = CreateNoteDto;
 
-/** `PUT /api/tasks/:id` 的请求体。 */
-export interface UpdateTaskInput {
-  title?: string;
-  completed?: boolean;
-}
-
-/** `POST /api/notes` 的请求体。 */
-export interface CreateNoteInput {
-  taskId?: string | null;
-  content: string;
-}
-
-/** `PUT /api/notes/:id` 的请求体。 */
-export interface UpdateNoteInput {
-  content?: string;
-}
+/** `PUT /api/notes/:id` 的请求体（由 typeshare 从 `UpdateNoteDto` 生成）。 */
+export type UpdateNoteInput = UpdateNoteDto;
 
 /** 任务仓储端口。 */
 export interface TaskRepository {
-  search(query: TaskQuery): Promise<TaskListResult>;
+  search(query: TaskQuery): Promise<TaskList>;
   create(title: string): Promise<Task>;
   update(id: string, input: UpdateTaskInput): Promise<Task>;
   remove(id: string): Promise<void>;

@@ -1,19 +1,16 @@
 /**
  * 任务领域：实体 + 不变量。
  *
- * 与 Rust 端 `Task` 对应，字段为 camelCase 以匹配后端序列化输出。
+ * `Task` 类型由后端 Rust 结构体经 **typeshare** 生成（见 `./generated.ts`），
+ * 是前后端共享的单一事实来源；本文件只保留校验函数与前端专用概念。
+ * 修改任务字段请改后端 `src-tauri/src/domain/task.rs` 后重新生成。
  */
+
+/** 任务实体（由 typeshare 从 Rust `Task` 生成）。 */
+export type { Task } from "./generated";
 
 /** 标题最大长度（与后端 `TITLE_MAX_LEN` 一致）。 */
 export const TITLE_MAX_LEN = 120;
-
-/** 任务聚合。 */
-export interface Task {
-  id: string;
-  title: string;
-  completed: boolean;
-  createdAt: string;
-}
 
 /** 列表筛选维度。 */
 export type TaskFilter = "all" | "active" | "completed";

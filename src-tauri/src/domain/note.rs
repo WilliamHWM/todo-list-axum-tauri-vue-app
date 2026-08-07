@@ -6,16 +6,22 @@
 use crate::domain::error::DomainError;
 use crate::shared::time;
 use serde::Serialize;
+use typeshare::typeshare;
 use uuid::Uuid;
 
 /// 内容最大长度（字符数，与前端一致）。
 pub const CONTENT_MAX_LEN: usize = 5000;
 
 /// 附属于任务（或独立）的笔记聚合。
+///
+/// `task_id` 为 `None` 时序列化会**省略该字段**（而非输出 `null`），这样与
+/// typeshare 生成的 `taskId?: string` 语义一致，前后端共享契约才准确。
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Note {
     id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     task_id: Option<String>,
     content: String,
     created_at: String,

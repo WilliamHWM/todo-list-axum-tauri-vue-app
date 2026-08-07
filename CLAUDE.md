@@ -6,16 +6,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Development (Tauri + Axum + Vue):**
 ```bash
-pnpm install              # Install dependencies
-pnpm tauri dev            # Run dev server with hot reload (opens desktop window)
+bun install              # Install dependencies
+bun tauri dev            # Run dev server with hot reload (opens desktop window)
 ```
 
 **Frontend-only:**
 ```bash
-pnpm dev                  # Vite frontend only (browser preview)
-pnpm build                # Type-check (vue-tsc) + build frontend
-pnpm preview              # Preview built frontend
+bun run dev                  # Vite frontend only (browser preview)
+bun run build                # Type-check (vue-tsc) + build frontend
+bun run preview              # Preview built frontend
+bun run types:generate       # Manually regenerate shared types from Rust (typeshare → src/domain/generated.ts)
 ```
+
+> Note: `bun tauri dev` / `bun tauri build` chain `typeshare` generation before the Tauri CLI (see the `tauri` script in package.json), so shared types are always fresh when starting dev or building.
 
 **Rust:**
 ```bash
@@ -26,7 +29,7 @@ cargo test                # Run migration + API contract tests (no window opened
 
 **Production Build:**
 ```bash
-pnpm tauri build          # Full release build (frontend + bundled app)
+bun tauri build          # Full release build (frontend + bundled app)
 ```
 
 ## Architecture Overview
@@ -66,6 +69,14 @@ Key conventions:
 - **No `validator` crate**: validation lives in the domain entities (`Task::new`,
   `Task::update`, `Note::new`, `Note::update`) via `try_*`-style constructors/actions.
   Frontend mirrors the same rules with `validateTaskTitle`/`validateNoteContent`.
+- **Shared types (typeshare)**: shared data carriers (DTOs, `Task`/`Note`,
+  `TaskQuery`/`TaskList`) carry `#[typeshare]` on the backend and are generated into
+  `src/domain/generated.ts` via `bun run types:generate` (also chained before
+  `bun tauri dev`/`bun tauri build`). Frontend re-exports from
+  `./generated`; never hand-edit `generated.ts`. typeshare rejects `i64`/`u64`/
+  `usize`/`isize` (use `i32` for pagination/counts). For `Option<T>` fields that
+  should be omitted (not `null`) on the wire — matching the generated `?:` type —
+  add `#[serde(skip_serializing_if = "Option::is_none")]` on the backend.
 
 ### Data Flow
 
@@ -105,14 +116,14 @@ Key insight: Axum binds to a random local port (`127.0.0.1:0`), Tauri captures t
 | Frontend | `src/main.ts` | App entry: mounts Pinia, Router, Element Plus, icons |
 | Frontend | `src/shared/di.ts` | Frontend composition root: injects HTTP repos into store factories |
 | Frontend | `src/shared/format.ts` | UTC → local time formatting (dayjs) |
-| Frontend | `src/domain/` | Entities (`task.ts`/`note.ts` + validators), repository interfaces (`repository.ts`) |
+| Frontend | `src/domain/` | Entities (`task.ts`/`note.ts` + validators), repository interfaces (`repository.ts`), typeshare snapshot (`generated.ts`) |
 | Frontend | `src/application/tasks.ts`, `notes.ts` | Pinia store factories: all list/CRUD use-case logic |
 | Frontend | `src/south/http.ts` | axios instance, port discovery, envelope unwrap, `ApiError` |
 | Frontend | `src/south/task-repository.ts`, `note-repository.ts` | HTTP adapters implementing domain ports |
 | Frontend | `src/north/` | Router, `App.vue`, views, components (thin, call stores) |
 | Backend (Composition) | `src-tauri/src/lib.rs` | Boot: tracing → config → DB → wire repos/services → Axum → Tauri |
 | Backend (Shared) | `src-tauri/src/shared/` | `config.rs` (`APP_*` env), `time.rs` (UTC RFC3339), `error.rs` (`AppError`) |
-| Backend (Domain) | `src-tauri/src/domain/` | Entities (`task.rs`/`note.rs`), south ports (`repository.rs`) + `TaskQuery`/`TaskList`, `DomainError`/`RepoError` |
+| Backend (Domain) | `src-tauri/src/domain/` | Entities (`task.rs`/`note.rs`), south ports (`repository.rs` + `uow.rs`) with `TaskQuery`/`TaskList` + `UnitOfWork`/`UnitOfWorkFactory`, `DomainError`/`RepoError` |
 | Backend (Application) | `src-tauri/src/application/` | `TaskService`/`NoteService` (use cases), north ports (`ports.rs`), DTOs, `ServiceError` |
 | Backend (South) | `src-tauri/src/south/db/` | Pool init (WAL) + `sqlx::migrate!`, `SqlxTaskRepository`/`SqlxNoteRepository`, `SqlxUnitOfWorkFactory` + `SqlxUnitOfWork` (transactions via `UnitOfWork`/`UnitOfWorkFactory` domain ports) |
 | Backend (North) | `src-tauri/src/north/` | `AppState { tasks: Arc<dyn TaskUseCase>, notes: Arc<dyn NoteUseCase>, config }`, handlers, routes, `ApiError`/`ApiResponse`/`JsonBody` |
@@ -123,7 +134,8 @@ Key insight: Axum binds to a random local port (`127.0.0.1:0`), Tauri captures t
 ### Important Patterns
 
 - **Layering**: north → application → domain, with south implementing domain ports. Handlers never write SQL; repos never build HTTP responses; entities hold invariants.
-- **DI**: services hold `Arc<dyn TaskRepository>` / `Arc<dyn NoteRepository>` (south) trait objects; the north gateway holds `Arc<dyn TaskUseCase>` / `Arc<dyn NoteUseCase>` (north). Tests inject the same sqlx adapters against a temp DB.
+- **DI**: services hold `Arc<dyn TaskRepository>` / `Arc<dyn NoteRepository>` (south) trait objects, plus `Arc<dyn UnitOfWorkFactory>` for multi-write use cases; the north gateway holds `Arc<dyn TaskUseCase>` / `Arc<dyn NoteUseCase>` (north). Tests inject the same sqlx adapters against a temp DB.
+- **Transactions (Unit of Work)**: multi-statement writes go through `UnitOfWorkFactory::begin()` → `UnitOfWork` (SQLite transaction). The tx-backed repos reuse the same SQL via `Executor` helpers; plain `&Pool` queries use the same functions with `&Pool` implementing `Executor`. Example: `create_task_with_note` (POST `/api/tasks/with-note`).
 - **Validation**: domain entities enforce invariants in `new`/`update`; `JsonBody` maps JSON parse failures to 400 + envelope.
 - **CORS**: `tower_http::cors` allows any origin — safe, everything binds to `127.0.0.1` only.
 - **Request logging**: `TraceLayer` records method, URI, status, latency per request.

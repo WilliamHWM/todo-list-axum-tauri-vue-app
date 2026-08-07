@@ -78,7 +78,7 @@
 |------|------|----------|
 | [Rust](https://www.rust-lang.org/tools/install)（stable） | 编译后端 | `rustc --version` |
 | [Node.js](https://nodejs.org/)（≥ 18） | 跑前端工具链 | `node -v` |
-| [pnpm](https://pnpm.io/) | 包管理器 | `pnpm -v` |
+| [bun](https://bun.sh/) | 包管理器 + 前端运行时 | `bun -v` |
 
 Windows 上编译 Tauri 还需要 WebView2（Win10/11 一般自带）与 Microsoft C++ 构建工具
 （装 [VS Build Tools](https://visualstudio.microsoft.com/zh-hans/visual-cpp-build-tools/)，
@@ -88,18 +88,20 @@ Windows 上编译 Tauri 还需要 WebView2（Win10/11 一般自带）与 Microso
 ### 3.2 常用命令
 
 ```bash
-pnpm install                 # 安装前端依赖（首次必须）
-pnpm tauri dev               # 开发模式：热重载 + 打开桌面窗口（最常用）
-pnpm dev                     # 仅前端：在浏览器里预览（不启动 Rust/Tauri）
-pnpm build                   # 前端类型检查 + 打包（= vue-tsc --noEmit && vite build）
+bun install                  # 安装前端依赖（首次必须）
+bun tauri dev                # 开发模式：热重载 + 打开桌面窗口（最常用）
+bun run dev                  # 仅前端：在浏览器里预览（不启动 Rust/Tauri）
+bun run build                # 前端类型检查 + 打包（= vue-tsc --noEmit && vite build）
 cd src-tauri && cargo check  # 后端类型检查（改 Rust 代码后必跑）
-cd src-tauri && cargo test   # 后端测试（8 个用例，不开窗口）
-pnpm tauri build             # 全量发布：打包成可安装的应用
+cd src-tauri && cargo test   # 后端测试（12 个用例，不开窗口）
+bun tauri build              # 全量发布：打包成可安装的应用
 ```
 
-> 💡 开发时的分工：`pnpm tauri dev` 会先执行 `vite`（见 [tauri.conf.json](./src-tauri/tauri.conf.json)
+> 💡 开发时的分工：`bun tauri dev` 会先执行 `vite`（见 [tauri.conf.json](./src-tauri/tauri.conf.json)
 > 的 `beforeDevCommand`），然后编译 Rust 并启动窗口。窗口里加载 `http://localhost:1420`
 > （Vite 端口）。热更新时，改前端秒级生效，改 Rust 会重新编译后端。
+> `bun tauri dev` / `bun tauri build` 启动前还会先跑 typeshare，把后端
+> `#[typeshare]` 结构体重新生成为 `src/domain/generated.ts`，保证前端类型最新。
 
 ### 3.3 环境变量配置
 
@@ -660,8 +662,8 @@ cd src-tauri && cargo check && cargo test
 ### 步骤 10：收尾
 
 ```bash
-pnpm build      # 前端类型检查 + 打包
-pnpm tauri dev  # 肉眼验证
+bun run build      # 前端类型检查 + 打包
+bun tauri dev      # 肉眼验证
 ```
 
 > 规律总结（一定要记住）：
@@ -695,7 +697,7 @@ pnpm tauri dev  # 肉眼验证
 |------|-----------------|
 | `cargo check` 报错 | 看是否是依赖版本问题；`cargo update` 或看 [Cargo.toml](./src-tauri/Cargo.toml)。 |
 | 前端编译报"找不到模块 @/xxx" | 路径写错了，`@` = `src/`（[vite.config.ts](./vite.config.ts) + [tsconfig.json](./tsconfig.json)）。 |
-| 窗口打开但列表空/报错 | 看 Rust 终端日志（TraceLayer 会打印请求）；或直接浏览器打开 `pnpm dev` 调试。 |
+| 窗口打开但列表空/报错 | 看 Rust 终端日志（TraceLayer 会打印请求）；或直接浏览器打开 `bun run dev` 调试。 |
 | 数据没保存 | `data.db` 在 `src-tauri/` 目录下；确认 WAL 文件（`data.db-wal`）存在。 |
 | 时间显示不对 | 确认后端返回带 `Z`；前端必须走 `formatDateTime`。 |
 | 改了表但重启没变化 | 迁移只跑一次，改动要**新增**迁移文件，不能改旧的。 |
@@ -728,7 +730,7 @@ pnpm tauri dev  # 肉眼验证
 
 按顺序读完即可独立开发：
 
-1. **先跑起来**：`pnpm install` → `pnpm tauri dev`，亲手点一遍任务/笔记功能。
+1. **先跑起来**：`bun install` → `bun tauri dev`，亲手点一遍任务/笔记功能。
 2. **读 [README.md](./README.md) 与本文第 4 节**：建立架构心智模型。
 3. **读第 5 节后端**，重点：`domain/task.rs` → `application/task_service.rs` →
    `south/db/task_repo.rs` → `north/handlers/tasks.rs` → `lib.rs`。

@@ -5,7 +5,7 @@
 import { request } from "./http";
 import type {
   Task,
-  TaskListResult,
+  TaskList,
   TaskQuery,
   TaskRepository,
   UpdateTaskInput,
@@ -13,8 +13,8 @@ import type {
 
 /** 基于 HTTP 的 `TaskRepository` 实现。 */
 export class HttpTaskRepository implements TaskRepository {
-  search(query: TaskQuery): Promise<TaskListResult> {
-    return request<TaskListResult>({ url: "/tasks", params: query });
+  search(query: TaskQuery): Promise<TaskList> {
+    return request<TaskList>({ url: "/tasks", params: query });
   }
 
   create(title: string): Promise<Task> {

@@ -175,7 +175,7 @@ impl TaskRepository for SqlxTaskRepository {
     }
 
     async fn search(&self, query: &TaskQuery) -> Result<TaskList, RepoError> {
-        let total = count_tasks(&self.pool, query).await?;
+        let total = count_tasks(&self.pool, query).await? as i32;
         let items = list_tasks(&self.pool, query).await?;
         Ok(TaskList { items, total })
     }

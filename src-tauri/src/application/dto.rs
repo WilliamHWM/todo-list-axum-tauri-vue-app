@@ -2,10 +2,15 @@
 //!
 //! 只做 JSON 反序列化的纯数据载体；是否合法由领域实体在 `new`/`update` 时校验，
 //! 这里不做任何业务规则。
+//!
+//! `#[typeshare]` 标记的类型会被生成到前端 `src/domain/generated.ts`，作为前后端
+//! 共享的类型契约（见项目 README 的"typeshare 类型共享"一节）。
 
 use serde::Deserialize;
+use typeshare::typeshare;
 
 /// 创建任务的输入。
+#[typeshare]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateTaskDto {
@@ -13,6 +18,7 @@ pub struct CreateTaskDto {
 }
 
 /// 原子创建任务并附带首条笔记的输入。
+#[typeshare]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateTaskWithNoteDto {
@@ -21,6 +27,7 @@ pub struct CreateTaskWithNoteDto {
 }
 
 /// 更新任务的输入（字段全部可选，但至少提供一个）。
+#[typeshare]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateTaskDto {
@@ -29,6 +36,7 @@ pub struct UpdateTaskDto {
 }
 
 /// 创建笔记的输入。
+#[typeshare]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateNoteDto {
@@ -37,6 +45,7 @@ pub struct CreateNoteDto {
 }
 
 /// 更新笔记的输入。
+#[typeshare]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateNoteDto {

@@ -84,7 +84,7 @@ impl TaskRepository for TxTaskRepository {
     async fn search(&self, query: &TaskQuery) -> Result<TaskList, RepoError> {
         let mut guard = lock_tx(&self.tx).await?;
         let tx = tx_mut(&mut guard)?;
-        let total = count_tasks(&mut *tx, query).await?;
+        let total = count_tasks(&mut *tx, query).await? as i32;
         let items = list_tasks(tx, query).await?;
         Ok(TaskList { items, total })
     }

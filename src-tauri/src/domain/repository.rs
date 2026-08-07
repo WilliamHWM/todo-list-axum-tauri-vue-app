@@ -6,8 +6,13 @@
 use crate::domain::note::Note;
 use crate::domain::task::Task;
 use serde::{Deserialize, Serialize};
+use typeshare::typeshare;
 
 /// 任务列表查询条件（全部可选，仅出现的条件参与过滤/排序/分页）。
+///
+/// `limit`/`offset` 用 `i32`：typeshare 不支持 `i64`（JS 无 64 位整数），且分页
+/// 参数用 `i32` 足够，JSON 序列化行为与 `i64` 完全一致。
+#[typeshare]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskQuery {
@@ -15,15 +20,17 @@ pub struct TaskQuery {
     pub completed: Option<bool>,
     pub sort: Option<String>,
     pub sort_dir: Option<String>,
-    pub limit: Option<i64>,
-    pub offset: Option<i64>,
+    pub limit: Option<i32>,
+    pub offset: Option<i32>,
 }
 
 /// 分页后的任务列表。
+#[typeshare]
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskList {
     pub items: Vec<Task>,
-    pub total: i64,
+    pub total: i32,
 }
 
 /// 仓储访问错误（对 sqlx 错误的透明封装，领域层无需感知具体实现）。

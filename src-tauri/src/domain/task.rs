@@ -6,12 +6,14 @@
 use crate::domain::error::DomainError;
 use crate::shared::time;
 use serde::Serialize;
+use typeshare::typeshare;
 use uuid::Uuid;
 
 /// 标题最大长度（字符数，与前端一致）。
 pub const TITLE_MAX_LEN: usize = 120;
 
 /// 待办任务聚合。
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {

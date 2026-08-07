@@ -72,18 +72,19 @@ src-tauri/                    # 后端（Rust，菱形架构）
 ## 运行
 
 ```bash
-pnpm install                  # 安装前端依赖
-pnpm tauri dev                # 开发模式（热重载 + 桌面窗口）
+bun install                  # 安装前端依赖
+bun tauri dev                # 开发模式（热重载 + 桌面窗口）；启动前自动重新生成共享类型
 ```
 
 常用检查与构建：
 
 ```bash
-pnpm build                    # 前端类型检查 + 打包（vue-tsc + vite）
-pnpm dev                      # 仅前端（浏览器预览，无 Tauri）
-cd src-tauri && cargo check   # Rust 类型检查
-cd src-tauri && cargo test    # Rust 单元/集成测试（含迁移与 API 契约测试）
-pnpm tauri build              # 全量发布构建（前端 + 打包安装包）
+bun run build                # 前端类型检查 + 打包（vue-tsc + vite）
+bun run dev                  # 仅前端（浏览器预览，无 Tauri）
+bun run types:generate       # 手动重新生成共享类型（typeshare）
+cd src-tauri && cargo check  # Rust 类型检查
+cd src-tauri && cargo test   # Rust 单元/集成测试（含迁移与 API 契约测试）
+bun tauri build              # 全量发布构建（前端 + 打包安装包）
 ```
 
 ## 配置（环境变量）
@@ -121,6 +122,16 @@ pnpm tauri build              # 全量发布构建（前端 + 打包安装包）
 | POST | `/api/notes` | 创建笔记 |
 | PUT / DELETE | `/api/notes/:id` | 更新 / 删除笔记 |
 
+## 类型共享（typeshare）
+
+前后端共享的数据载体类型（DTO、`Task`/`Note` 实体、`TaskQuery`/`TaskList`）由 [typeshare](https://github.com/1Password/typeshare) 从后端 Rust 结构体生成，前端 `src/domain/generated.ts` 是共享契约的"快照"：
+
+- 后端在结构体上加 `#[typeshare]`（见 `application/dto.rs`、`domain/`）。
+- 改结构体后自动重新生成：`bun tauri dev` / `bun tauri build` 启动前都会先跑 typeshare；也可手动执行 `bun run types:generate`（需安装 `typeshare-cli`：`cargo install typeshare-cli --locked`）。
+- **不要手改 `generated.ts`**；前端实体文件（`domain/task.ts`、`note.ts`）从 `./generated` re-export 类型，并保留常量与校验函数。
+- 注意：typeshare 不接受 `i64`/`u64`/`usize`/`isize`，分页/计数等用 `i32`（JSON 行为不变）。
+- 序列化约定：`Option<T>` 字段如不希望以 `null` 出现在 JSON（与生成的 `?:` 类型不符），在后端加 `#[serde(skip_serializing_if = "Option::is_none")]`。
+
 ## 数据与迁移
 
 - SQLite 文件：`./data.db`（WAL 模式，启动目录）。
@@ -131,6 +142,6 @@ pnpm tauri build              # 全量发布构建（前端 + 打包安装包）
 
 1. **新增业务**：前端 `domain/` 定义实体/南向端口 → `south/` 实现 → `application/` 加 store 工厂 → `north/` 加视图；后端 `domain/` 定义实体/trait → `south/` 实现 → `application/` 加服务并实现北向端口 → `north/` 加 handler/路由。
 2. **依赖方向**：north → application → domain（← south 实现）；北向只依赖 `application` 的北向端口接口；shared 可被任意层引用，但不要反向依赖。
-3. **改表结构**：新增 `migrations/<版本>_<描述>.sql`，同步后端 `south` 仓储与前端 `domain` 类型。
+3. **改表结构**：新增 `migrations/<版本>_<描述>.sql`，同步后端 `south` 仓储与前端 `domain` 类型；改 DTO/实体后由 `bun tauri dev` / `bun run types:generate` 自动重新生成共享类型。
 4. **时区**：永远存/传 UTC，不要在后端做本地时区转换；展示时由前端转本地。
 5. **错误**：领域错误（`DomainError`）/ 仓储错误（`RepoError`）由应用层统一为 `ServiceError`，北向网关映射为统一信封。
