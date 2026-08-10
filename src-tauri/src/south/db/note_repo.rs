@@ -1,4 +1,4 @@
-﻿//! 笔记仓储的 sqlx 适配器：领域端口 → SQLite 具体实现。
+//! 笔记仓储的 sqlx 适配器：领域端口 → SQLite 具体实现。
 //!
 //! 与 [`super::task_repo`] 相同的约定：SQL 封装成接受任意 [`Executor`] 的
 //! `pub(crate)` 助手函数，供普通仓储与工作单元的事务仓储复用。
@@ -8,10 +8,8 @@ use crate::domain::{Note, NoteRepository, RepoError};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Executor, Row, Sqlite};
 
-/// 查询列清单，行转实体时复用。
 const SELECT_COLS: &str = "id, task_id, content, created_at";
 
-/// sqlx 行 → 领域实体（原始数据重建，跳过校验）。
 fn map_note(row: &SqliteRow) -> Result<Note, RepoError> {
     Ok(Note::rebuild(
         row.try_get("id")?,
@@ -22,10 +20,9 @@ fn map_note(row: &SqliteRow) -> Result<Note, RepoError> {
 }
 
 // ---------------------------------------------------------------------------
-// Executor 助手：`E` 可以是 `&Pool`（独立语句）或 `&mut Transaction`（事务内）。
+// Executor 助手
 // ---------------------------------------------------------------------------
 
-/// 按 ID 查询单个笔记。
 pub(crate) async fn find_note_by_id<'e, E>(
     executor: E,
     id: &str,
@@ -40,7 +37,6 @@ where
     row.as_ref().map(map_note).transpose()
 }
 
-/// 插入一个新笔记。
 pub(crate) async fn insert_note<'e, E>(executor: E, note: &Note) -> Result<(), RepoError>
 where
     E: Executor<'e, Database = Sqlite>,
@@ -57,7 +53,6 @@ where
     Ok(())
 }
 
-/// 全量更新一个已存在笔记，返回是否真的更新了行。
 pub(crate) async fn update_note<'e, E>(executor: E, note: &Note) -> Result<bool, RepoError>
 where
     E: Executor<'e, Database = Sqlite>,
@@ -70,7 +65,6 @@ where
     Ok(result.rows_affected() > 0)
 }
 
-/// 按 ID 删除笔记，返回是否真的删除了行。
 pub(crate) async fn delete_note<'e, E>(executor: E, id: &str) -> Result<bool, RepoError>
 where
     E: Executor<'e, Database = Sqlite>,
@@ -82,7 +76,6 @@ where
     Ok(result.rows_affected() > 0)
 }
 
-/// 返回某个任务的全部笔记（按创建时间升序）。
 pub(crate) async fn list_notes_by_task<'e, E>(
     executor: E,
     task_id: &str,
@@ -95,7 +88,7 @@ where
     rows.iter().map(map_note).collect()
 }
 
-/// 基于 SQLite 的 `NoteRepository` 实现。
+/// 基于 SQLite 的 `NoteRepository` 实现（非事务路径）。
 #[derive(Clone)]
 pub struct SqlxNoteRepository {
     pool: Pool,

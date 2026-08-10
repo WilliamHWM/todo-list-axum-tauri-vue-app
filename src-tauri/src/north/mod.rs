@@ -30,7 +30,7 @@ pub struct AppState {
 mod tests {
     use super::*;
     use crate::south::db::init_pool;
-    use crate::south::{SqlxNoteRepository, SqlxTaskRepository, SqlxUnitOfWorkFactory};
+    use crate::south::{SqlxNoteRepository, SqlxTaskRepository, SqlxTransactionManager};
     use axum::{
         body::{to_bytes, Body},
         http::{Request, StatusCode},
@@ -54,7 +54,7 @@ mod tests {
         let pool = init_pool(&config).await.expect("init_pool failed");
         let tasks: Arc<dyn TaskUseCase> = Arc::new(crate::application::TaskService::new(
             Arc::new(SqlxTaskRepository::new(pool.clone())),
-            Arc::new(SqlxUnitOfWorkFactory::new(pool.clone())),
+            Arc::new(SqlxTransactionManager::new(pool.clone())),
         ));
         let notes: Arc<dyn NoteUseCase> = Arc::new(crate::application::NoteService::new(Arc::new(
             SqlxNoteRepository::new(pool),

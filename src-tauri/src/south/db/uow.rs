@@ -1,190 +1,252 @@
-//! 工作单元的 sqlx 实现：一个连接池事务 + 绑定到该事务的仓储。
+//! 事务管理器：Transaction Context 模式的 SQLite/sqlx 适配器。
 //!
-//! # 事务如何保证
+//! ## 设计（对应 `domain/uow.rs` 端口）
 //!
-//! - **原子性**：`SqlxUnitOfWorkFactory::begin` 调用 `Pool::begin()` 开启 SQLite
-//!   `BEGIN` 事务（sqlx 底层用 `SAVEPOINT`/`BEGIN`）；事务内所有写入都作用于
-//!   这份 `Transaction`，其他连接在提交前不可见。
-//! - **提交**：`SqlxUnitOfWork::commit` 调用 `Transaction::commit()`（`COMMIT`），
-//!   事务内写入才落盘。
-//! - **回滚**：事务内任一步出错返回 `Err`，或应用层未提交就丢弃工作单元时，sqlx
-//!   的 `Transaction` 被 `Drop` 会自动执行 `ROLLBACK`——即使忘记显式回滚也不会残留。
+//! - [`SqlxTransactionManager`]：实现 [`TransactionManager`]，`begin()` 从连接池
+//!   开启事务并返回具体上下文 [`SqlxTransactionContext`]，无 `Box<dyn>`、无虚表。
+//! - [`SqlxTransactionContext`]：持有共享事务 + 事务内仓储（具体类型）。应用层
+//!   通过 `ctx.tasks()` / `ctx.notes()` 获取仓储，`ctx.commit()` 提交。
+//! - 事务仓储 [`TxTaskRepository`] / [`TxNoteRepository`]：不持有连接池、不自行
+//!   开启事务，只通过共享的 [`SharedTx`] 借用当前事务执行 SQL（复用 `Executor`
+//!   助手函数，与普通路径 SQL 完全一致）。
 //!
-//! 事务绑定仓储把同一个 `Transaction` 放进共享锁（`Arc<Mutex<Option<_>>>`），每次
-//! 写操作临时取出 `&mut Transaction` 执行 SQL。事务内操作是串行的（单用例编排），
-//! 不存在并发取锁问题。
+//! ## 为什么用 `Arc<Mutex<Option<Transaction>>>`（SharedTx）
+//!
+//! 一个事务内通常需要多个仓储（如任务 + 笔记），而 Rust 禁止同时存在两个 `&mut
+//! Transaction`。[`SharedTx`] 用内部可变性（`Mutex`）让多个仓储共享同一事务：
+//!
+//! - `Mutex` 是标准、健全的原语；无并发时无锁竞争，有并发时也能保证安全
+//!   （旧版 `UnsafeCell` 方案不健全，已弃用）。
+//! - `Pool::begin()` 直接返回 `Transaction<'static, Sqlite>`，无需 `transmute`。
+//! - `commit()` 通过 `take()` 取走事务所有权；之后再访问仓储得到 `RepoError`
+//!   （防御性错误；正常流程下 `commit(self)` 已消费上下文，结构上阻止）。
+//! - 上下文 drop 而未 commit → `Transaction::Drop` 自动 ROLLBACK。
 
-use super::note_repo::{
-    delete_note, find_note_by_id, insert_note, list_notes_by_task, update_note,
-};
-use super::task_repo::{count_tasks, delete_task, find_task_by_id, insert_task, list_tasks, update_task};
-use super::Pool;
 use crate::domain::{
-    Note, NoteRepository, RepoError, Task, TaskList, TaskQuery, TaskRepository, UnitOfWork,
-    UnitOfWorkFactory,
+    Note, NoteRepository, RepoError, Task, TaskList, TaskQuery, TaskRepository,
+    TransactionContext, TransactionManager,
 };
-use sqlx::sqlite::SqliteConnection;
 use sqlx::{Sqlite, Transaction};
 use std::sync::Arc;
-use tokio::sync::Mutex;
-use tokio::sync::MutexGuard;
+use tokio::sync::{Mutex, MutexGuard};
 
-/// 事务句柄：所有事务内仓储共享的"同一份事务"。
+// ===========================================================================
+// 共享事务容器
+// ===========================================================================
+
+/// 事务内仓储共享的底层事务容器。
 ///
-/// - `Some(tx)`：事务仍在进行；
-/// - `None`：事务已被 `commit` 取走（此后任何仓储操作都会报错）。
-type SharedTx = Arc<Mutex<Option<Transaction<'static, Sqlite>>>>;
-
-/// 取出并锁住事务，返回可写引用。
-async fn lock_tx<'a>(
-    shared: &'a SharedTx,
-) -> Result<MutexGuard<'a, Option<Transaction<'static, Sqlite>>>, RepoError> {
-    Ok(shared.lock().await)
-}
-
-/// 从锁住的 `Option` 里取出事务底层连接（`&mut SqliteConnection` 实现了 sqlx 的
-/// [`Executor`]）；提交后再使用仓储会在这里报错。
-fn tx_mut<'a>(
-    guard: &'a mut MutexGuard<'_, Option<Transaction<'static, Sqlite>>>,
-) -> Result<&'a mut SqliteConnection, RepoError> {
-    let tx = guard
-        .as_mut()
-        .ok_or_else(|| RepoError::wrap("工作单元已提交，不能再执行事务内操作"))?;
-    Ok(&mut **tx)
-}
-
-/// 绑定到当前事务的任务仓储（只服务工作单元内部，SQL 复用 [`super::task_repo`]）。
+/// `Mutex` 提供内部可变性：多个仓储通过 `&self` 获取对同一事务的 `&mut` 访问。
+/// `Option` 在提交时 `take()` 取走所有权；之后的操作返回 `RepoError`。
 #[derive(Clone)]
-struct TxTaskRepository {
-    tx: SharedTx,
+pub(crate) struct SharedTx {
+    tx: Arc<Mutex<Option<Transaction<'static, Sqlite>>>>,
+}
+
+impl SharedTx {
+    fn new(tx: Transaction<'static, Sqlite>) -> Self {
+        Self {
+            tx: Arc::new(Mutex::new(Some(tx))),
+        }
+    }
+
+    /// 上锁并返回事务容器；`tokio::sync::Mutex` 不中毒，guard 是 `Send`，
+    /// 可安全地跨 `.await` 持有。
+    async fn lock(&self) -> MutexGuard<'_, Option<Transaction<'static, Sqlite>>> {
+        self.tx.lock().await
+    }
+
+    /// 提交：取走事务所有权并 COMMIT。
+    ///
+    /// 之后容器变为 `None`，任何事务内操作返回 `RepoError`。
+    async fn commit(self) -> Result<Transaction<'static, Sqlite>, RepoError> {
+        let mut guard = self.tx.lock().await;
+        guard
+            .take()
+            .ok_or_else(|| RepoError::wrap("事务已提交，不能重复提交"))
+    }
+}
+
+/// 事务已被提交 / 回滚后，仍尝试在事务外执行仓储操作。
+fn tx_ended() -> RepoError {
+    RepoError::wrap("事务已结束，不能在已提交/回滚的事务外执行操作")
+}
+
+// ===========================================================================
+// 事务仓储（共享事务容器，通过 Mutex 获取 &mut Transaction）
+// ===========================================================================
+
+/// 绑定到单个 SQLite 事务的任务仓储（具体类型，无虚表）。
+#[derive(Clone)]
+pub struct TxTaskRepository {
+    shared: SharedTx,
+}
+
+impl TxTaskRepository {
+    pub(crate) fn new(shared: SharedTx) -> Self {
+        Self { shared }
+    }
 }
 
 #[async_trait::async_trait]
 impl TaskRepository for TxTaskRepository {
     async fn find_by_id(&self, id: &str) -> Result<Option<Task>, RepoError> {
-        let mut guard = lock_tx(&self.tx).await?;
-        find_task_by_id(tx_mut(&mut guard)?, id).await
+        let mut guard = self.shared.lock().await;
+        let tx = guard.as_mut().ok_or_else(tx_ended)?;
+        super::task_repo::find_task_by_id(&mut **tx, id).await
     }
 
     async fn insert(&self, task: &Task) -> Result<(), RepoError> {
-        let mut guard = lock_tx(&self.tx).await?;
-        insert_task(tx_mut(&mut guard)?, task).await
+        let mut guard = self.shared.lock().await;
+        let tx = guard.as_mut().ok_or_else(tx_ended)?;
+        super::task_repo::insert_task(&mut **tx, task).await
     }
 
     async fn update(&self, task: &Task) -> Result<bool, RepoError> {
-        let mut guard = lock_tx(&self.tx).await?;
-        update_task(tx_mut(&mut guard)?, task).await
+        let mut guard = self.shared.lock().await;
+        let tx = guard.as_mut().ok_or_else(tx_ended)?;
+        super::task_repo::update_task(&mut **tx, task).await
     }
 
     async fn delete(&self, id: &str) -> Result<bool, RepoError> {
-        let mut guard = lock_tx(&self.tx).await?;
-        delete_task(tx_mut(&mut guard)?, id).await
+        let mut guard = self.shared.lock().await;
+        let tx = guard.as_mut().ok_or_else(tx_ended)?;
+        super::task_repo::delete_task(&mut **tx, id).await
     }
 
     async fn search(&self, query: &TaskQuery) -> Result<TaskList, RepoError> {
-        let mut guard = lock_tx(&self.tx).await?;
-        let tx = tx_mut(&mut guard)?;
-        let total = count_tasks(&mut *tx, query).await? as i32;
-        let items = list_tasks(tx, query).await?;
+        let mut guard = self.shared.lock().await;
+        let tx = guard.as_mut().ok_or_else(tx_ended)?;
+        let total = super::task_repo::count_tasks(&mut **tx, query).await? as i32;
+        let items = super::task_repo::list_tasks(&mut **tx, query).await?;
         Ok(TaskList { items, total })
     }
 }
 
-/// 绑定到当前事务的笔记仓储（SQL 复用 [`super::note_repo`]）。
+/// 绑定到单个 SQLite 事务的笔记仓储（具体类型，无虚表）。
 #[derive(Clone)]
-struct TxNoteRepository {
-    tx: SharedTx,
+pub struct TxNoteRepository {
+    shared: SharedTx,
+}
+
+impl TxNoteRepository {
+    pub(crate) fn new(shared: SharedTx) -> Self {
+        Self { shared }
+    }
 }
 
 #[async_trait::async_trait]
 impl NoteRepository for TxNoteRepository {
     async fn find_by_id(&self, id: &str) -> Result<Option<Note>, RepoError> {
-        let mut guard = lock_tx(&self.tx).await?;
-        find_note_by_id(tx_mut(&mut guard)?, id).await
+        let mut guard = self.shared.lock().await;
+        let tx = guard.as_mut().ok_or_else(tx_ended)?;
+        super::note_repo::find_note_by_id(&mut **tx, id).await
     }
 
     async fn insert(&self, note: &Note) -> Result<(), RepoError> {
-        let mut guard = lock_tx(&self.tx).await?;
-        insert_note(tx_mut(&mut guard)?, note).await
+        let mut guard = self.shared.lock().await;
+        let tx = guard.as_mut().ok_or_else(tx_ended)?;
+        super::note_repo::insert_note(&mut **tx, note).await
     }
 
     async fn update(&self, note: &Note) -> Result<bool, RepoError> {
-        let mut guard = lock_tx(&self.tx).await?;
-        update_note(tx_mut(&mut guard)?, note).await
+        let mut guard = self.shared.lock().await;
+        let tx = guard.as_mut().ok_or_else(tx_ended)?;
+        super::note_repo::update_note(&mut **tx, note).await
     }
 
     async fn delete(&self, id: &str) -> Result<bool, RepoError> {
-        let mut guard = lock_tx(&self.tx).await?;
-        delete_note(tx_mut(&mut guard)?, id).await
+        let mut guard = self.shared.lock().await;
+        let tx = guard.as_mut().ok_or_else(tx_ended)?;
+        super::note_repo::delete_note(&mut **tx, id).await
     }
 
     async fn list_by_task(&self, task_id: &str) -> Result<Vec<Note>, RepoError> {
-        let mut guard = lock_tx(&self.tx).await?;
-        list_notes_by_task(tx_mut(&mut guard)?, task_id).await
+        let mut guard = self.shared.lock().await;
+        let tx = guard.as_mut().ok_or_else(tx_ended)?;
+        super::note_repo::list_notes_by_task(&mut **tx, task_id).await
     }
 }
 
-/// 一个 SQLite 事务工作单元：持有事务 + 绑定事务的仓储。
-pub struct SqlxUnitOfWork {
-    tx: SharedTx,
+// ===========================================================================
+// 事务上下文
+// ===========================================================================
+
+/// 事务上下文：持有共享事务 + 各仓储的具体类型。
+///
+/// ## 生命周期
+///
+/// - `begin()` 返回后，事务开启
+/// - 事务内操作通过 `tasks()` / `notes()` 获取仓储引用
+/// - 全部成功 → `commit()` 取走 Transaction 并提交
+/// - 中途出错 / 未调 commit 就 drop → `Transaction::Drop` 自动 ROLLBACK
+pub struct SqlxTransactionContext {
+    shared: SharedTx,
     tasks: TxTaskRepository,
     notes: TxNoteRepository,
 }
 
-impl SqlxUnitOfWork {
-    fn new(tx: Transaction<'static, Sqlite>) -> Self {
-        let shared: SharedTx = Arc::new(Mutex::new(Some(tx)));
+impl SqlxTransactionContext {
+    pub(crate) fn new(tx: Transaction<'static, Sqlite>) -> Self {
+        let shared = SharedTx::new(tx);
         Self {
-            tasks: TxTaskRepository { tx: shared.clone() },
-            notes: TxNoteRepository { tx: shared.clone() },
-            tx: shared,
+            tasks: TxTaskRepository::new(shared.clone()),
+            notes: TxNoteRepository::new(shared.clone()),
+            shared,
         }
     }
 }
 
 #[async_trait::async_trait]
-impl UnitOfWork for SqlxUnitOfWork {
-    fn task_repo(&self) -> &dyn TaskRepository {
-        &self.tasks
+impl TransactionContext for SqlxTransactionContext {
+    type TaskRepo = TxTaskRepository;
+    type NoteRepo = TxNoteRepository;
+
+    fn tasks(&mut self) -> &mut Self::TaskRepo {
+        &mut self.tasks
     }
 
-    fn note_repo(&self) -> &dyn NoteRepository {
-        &self.notes
+    fn notes(&mut self) -> &mut Self::NoteRepo {
+        &mut self.notes
     }
 
-    /// 提交事务：取出事务并 `COMMIT`。此后事务内仓储不可再使用。
-    ///
-    /// 若未调用本方法就丢弃工作单元，`Transaction` 被 `Drop` 时自动回滚。
-    async fn commit(&mut self) -> Result<(), RepoError> {
-        let mut guard = lock_tx(&self.tx).await?;
-        let tx = guard
-            .take()
-            .ok_or_else(|| RepoError::wrap("工作单元已提交，不能重复提交"))?;
-        drop(guard);
+    async fn commit(self) -> Result<(), RepoError> {
+        let tx = self.shared.commit().await?;
         tx.commit().await?;
         Ok(())
     }
 }
 
-/// 工作单元工厂：从连接池开启新事务。
+// ===========================================================================
+// 事务管理器
+// ===========================================================================
+
+/// 事务管理器：从连接池开启新事务，返回具体上下文（无 `Box<dyn>`、无虚表）。
 #[derive(Clone)]
-pub struct SqlxUnitOfWorkFactory {
-    pool: Pool,
+pub struct SqlxTransactionManager {
+    pub pool: super::Pool,
 }
 
-impl SqlxUnitOfWorkFactory {
-    pub fn new(pool: Pool) -> Self {
+impl SqlxTransactionManager {
+    pub fn new(pool: super::Pool) -> Self {
         Self { pool }
     }
 }
 
 #[async_trait::async_trait]
-impl UnitOfWorkFactory for SqlxUnitOfWorkFactory {
-    async fn begin(&self) -> Result<Box<dyn UnitOfWork>, RepoError> {
+impl TransactionManager for SqlxTransactionManager {
+    type Context = SqlxTransactionContext;
+
+    async fn begin(&self) -> Result<Self::Context, RepoError> {
+        // Pool::begin() 直接返回 Transaction<'static, Sqlite>，无需 transmute。
         let tx = self.pool.begin().await?;
-        Ok(Box::new(SqlxUnitOfWork::new(tx)))
+        Ok(SqlxTransactionContext::new(tx))
     }
 }
+
+// ===========================================================================
+// 测试
+// ===========================================================================
 
 #[cfg(test)]
 mod tests {
@@ -193,9 +255,9 @@ mod tests {
     use crate::south::db::init_pool;
     use uuid::Uuid;
 
-    /// 用唯一临时库建立连接池 + 工作单元工厂。
-    async fn test_pool() -> Pool {
-        let db_path = std::env::temp_dir().join(format!("axum_uow_test_{}.db", Uuid::new_v4()));
+    async fn test_pool() -> super::super::Pool {
+        let db_path =
+            std::env::temp_dir().join(format!("axum_uow_test_{}.db", Uuid::new_v4()));
         let config = AppConfig {
             database_url: format!("sqlite:{}?mode=rwc", db_path.display()),
             host: "127.0.0.1".to_owned(),
@@ -205,22 +267,22 @@ mod tests {
             request_timeout_secs: 15,
             db_max_connections: 5,
         };
-        let pool = init_pool(&config).await.expect("init_pool failed");
-        pool
+        init_pool(&config).await.expect("init_pool failed")
     }
 
-    /// 提交成功后：任务与笔记都可见。
+    /// 提交后：任务与笔记都可见。
     #[tokio::test]
     async fn commit_persists_task_and_note() {
         let pool = test_pool().await;
-        let factory = SqlxUnitOfWorkFactory::new(pool.clone());
+        let manager = SqlxTransactionManager::new(pool.clone());
 
-        let mut uow = factory.begin().await.expect("begin failed");
+        let mut ctx = manager.begin().await.expect("begin failed");
         let task = Task::new("事务任务").expect("valid task");
-        uow.task_repo().insert(&task).await.expect("insert task");
-        let note = Note::new(Some(task.id().to_owned()), "首条笔记").expect("valid note");
-        uow.note_repo().insert(&note).await.expect("insert note");
-        uow.commit().await.expect("commit failed");
+        ctx.tasks().insert(&task).await.expect("insert task");
+        let note = Note::new(Some(task.id().to_owned()), "首条笔记")
+            .expect("valid note");
+        ctx.notes().insert(&note).await.expect("insert note");
+        ctx.commit().await.expect("commit failed");
 
         let tasks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tasks")
             .fetch_one(&pool)
@@ -234,30 +296,51 @@ mod tests {
         assert_eq!(notes, 1, "commit 后笔记应可见");
     }
 
-    /// 中途失败（第二步写入违反外键约束）→ 不提交 → 第一步写入一并回滚。
+    /// 中途失败（笔记引用不存在的任务 → 外键约束）→ 自动回滚。
     #[tokio::test]
     async fn mid_transaction_failure_rolls_back() {
         let pool = test_pool().await;
-        let factory = SqlxUnitOfWorkFactory::new(pool.clone());
+        let manager = SqlxTransactionManager::new(pool.clone());
 
-        let mut uow = factory.begin().await.expect("begin failed");
+        let mut ctx = manager.begin().await.expect("begin failed");
         let task = Task::new("会被回滚的任务").expect("valid task");
-        uow.task_repo().insert(&task).await.expect("insert task");
+        ctx.tasks().insert(&task).await.expect("insert task");
 
-        // 第二步写入一个不存在的 task_id → 触发 notes 外键约束，返回 Err。
         let bad_note = Note::rebuild(
             Uuid::new_v4().to_string(),
             Some("no-such-task".to_owned()),
             "内容".to_owned(),
             "2026-01-01T00:00:00.000Z".to_owned(),
         );
-        assert!(uow.note_repo().insert(&bad_note).await.is_err(), "外键应拦截无效笔记");
-        drop(uow); // 丢弃工作单元 → 事务回滚
+        assert!(
+            ctx.notes().insert(&bad_note).await.is_err(),
+            "外键应拦截无效笔记"
+        );
+        drop(ctx);
 
         let tasks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tasks")
             .fetch_one(&pool)
             .await
             .unwrap();
         assert_eq!(tasks, 0, "回滚后任务不应残留");
+    }
+
+    /// `begin()` 返回具体上下文，无需 `Box<dyn>`；提交后不可再操作事务内仓储。
+    #[tokio::test]
+    async fn begin_returns_concrete_context() {
+        let pool = test_pool().await;
+        let manager = SqlxTransactionManager::new(pool.clone());
+
+        let mut ctx = manager.begin().await.expect("begin failed");
+        let task = Task::new("事务任务").expect("valid task");
+        ctx.tasks().insert(&task).await.expect("insert task");
+        ctx.commit().await.expect("commit failed");
+
+        // commit 消费了上下文，结构上杜绝"提交后再操作事务"。
+        let commits: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tasks")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(commits, 1);
     }
 }

@@ -77,8 +77,7 @@
 | 工具 | 用途 | 检查命令 |
 |------|------|----------|
 | [Rust](https://www.rust-lang.org/tools/install)（stable） | 编译后端 | `rustc --version` |
-| [Node.js](https://nodejs.org/)（≥ 18） | 跑前端工具链 | `node -v` |
-| [bun](https://bun.sh/) | 包管理器 + 前端运行时 | `bun -v` |
+| [bun](https://bun.sh/)（≥ 1.2） | 包管理器 + 前端运行时（替代 Node.js） | `bun -v` |
 
 Windows 上编译 Tauri 还需要 WebView2（Win10/11 一般自带）与 Microsoft C++ 构建工具
 （装 [VS Build Tools](https://visualstudio.microsoft.com/zh-hans/visual-cpp-build-tools/)，
@@ -292,8 +291,8 @@ north → application → domain ← south
 - [application/error.rs](./src-tauri/src/application/error.rs)：`ServiceError`，
   把 `DomainError`（业务规则）和 `RepoError`（数据访问）统一成一个错误类型。
 - [application/task_service.rs](./src-tauri/src/application/task_service.rs)：`TaskService`。
-  - `TaskService::new(repo: Arc<dyn TaskRepository>, uow: Arc<dyn UnitOfWorkFactory>)`：
-    构造函数**注入两个南向端口**（依赖注入）；第二个是**工作单元工厂**，用于跨仓储的
+  - `TaskService::new(repo: Arc<dyn TaskRepository>, tx_manager: Arc<M>)`（`M: TransactionManager`）：
+    构造函数**注入两个南向端口**（依赖注入）；第二个是**事务管理器**，用于跨仓储的
     事务用例。
   - `impl TaskUseCase for TaskService`：**实现北向端口**。
   - 看 `create` 的写法，理解用例的三步曲：
@@ -539,23 +538,24 @@ Axum 绑定随机端口（`APP_PORT=0`）→ 端口存进 Tauri 状态 → 前�
 
 ### 8.3 依赖注入（DI）
 
-- 后端：`TaskService::new(repo: Arc<dyn TaskRepository>, uow: Arc<dyn UnitOfWorkFactory>)`，
-  组合根在 [lib.rs](./src-tauri/src/lib.rs)。第二个参数是**工作单元工厂**（南向端口），
+- 后端：`TaskService::new(repo: Arc<dyn TaskRepository>, tx_manager: Arc<M>)`（`M: TransactionManager`），
+  组合根在 [lib.rs](./src-tauri/src/lib.rs)。第二个参数是**事务管理器**（南向端口），
   `create_task_with_note` 这类跨仓储用例用它开启事务。
 - 前端：`createTasksStore(repo: TaskRepository)`，组合根在 [shared/di.ts](./src/shared/di.ts)。
 - 好处：测试注入假实现、换实现零改动。
 
-### 8.5 sqlx 事务（工作单元）
+### 8.5 sqlx 事务（Transaction Context）
 
-项目通过**工作单元（Unit of Work）**模式使用 sqlx 事务，端口与实现分层清晰：
+项目通过**事务上下文（Transaction Context）**模式使用 sqlx 事务，端口与实现分层清晰：
 
-- **南向端口**：[domain/uow.rs](./src-tauri/src/domain/uow.rs) 定义 `UnitOfWork`（持有
-  `task_repo()` / `note_repo()` 与 `commit()`）和 `UnitOfWorkFactory`（`begin()`）。
+- **南向端口**：[domain/uow.rs](./src-tauri/src/domain/uow.rs) 定义 `TransactionContext`
+  （通过关联类型暴露 `tasks()` / `notes()` 与 `commit(self)`）和 `TransactionManager`
+  （`begin()` 返回具体上下文）。
 - **sqlx 实现**：[south/db/uow.rs](./src-tauri/src/south/db/uow.rs)。`begin()` 调
   `Pool::begin()` 开事务；事务内仓储复用 [task_repo.rs](./src-tauri/src/south/db/task_repo.rs)
   的 Executor 助手函数，SQL 与普通路径完全一致。
 - **保证**：`commit()` 落盘（`COMMIT`）；事务内任一步失败返回 `Err`，或未提交就丢弃
-  工作单元，`Transaction` 被 `Drop` 时自动 `ROLLBACK`——不会残留孤儿数据。
+  事务上下文，`Transaction` 被 `Drop` 时自动 `ROLLBACK`——不会残留孤儿数据。
 - **用例**：`POST /api/tasks/with-note`（创建任务并附带首条笔记，见
   [task_service.rs](./src-tauri/src/application/task_service.rs)）。测试：
   - [south/db/uow.rs 测试](./src-tauri/src/south/db/uow.rs)：提交成功 / 中途失败回滚。

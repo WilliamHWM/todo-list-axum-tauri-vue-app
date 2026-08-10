@@ -2,6 +2,13 @@
 //!
 //! 领域层不关心数据库，只声明"能存什么、能查什么"。应用层面向这些 trait 编程，
 //! 测试时可注入内存实现；生产环境注入 sqlx 适配器。
+//!
+//! ## 接口设计：`&self` 而非 `&mut self`
+//!
+//! 使用 `&self` 而非 `&mut self`，原因：
+//! - `Arc<dyn TaskRepository>` 只能通过 `&self` 借用（`Arc::as_ref()` 返回 `&T`）
+//! - 应用层 `TaskService` 持有 `&self` 的 `Arc<dyn TaskRepository>`，方法签名需匹配
+//! - 事务仓储的内部实现通过 `UnsafeCell` 提供 `&mut Transaction`（内部可变性）
 
 use crate::domain::note::Note;
 use crate::domain::task::Task;
@@ -9,9 +16,6 @@ use serde::{Deserialize, Serialize};
 use typeshare::typeshare;
 
 /// 任务列表查询条件（全部可选，仅出现的条件参与过滤/排序/分页）。
-///
-/// `limit`/`offset` 用 `i32`：typeshare 不支持 `i64`（JS 无 64 位整数），且分页
-/// 参数用 `i32` 足够，JSON 序列化行为与 `i64` 完全一致。
 #[typeshare]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,29 +51,19 @@ impl RepoError {
 /// 任务仓储端口。
 #[async_trait::async_trait]
 pub trait TaskRepository: Send + Sync {
-    /// 按 ID 查询单个任务，不存在返回 `Ok(None)`。
     async fn find_by_id(&self, id: &str) -> Result<Option<Task>, RepoError>;
-    /// 插入一个新任务。
     async fn insert(&self, task: &Task) -> Result<(), RepoError>;
-    /// 全量更新一个已存在任务，返回是否真的更新了行。
     async fn update(&self, task: &Task) -> Result<bool, RepoError>;
-    /// 按 ID 删除任务，返回是否真的删除了行。
     async fn delete(&self, id: &str) -> Result<bool, RepoError>;
-    /// 按条件过滤 + 排序 + 分页查询任务。
     async fn search(&self, query: &TaskQuery) -> Result<TaskList, RepoError>;
 }
 
 /// 笔记仓储端口。
 #[async_trait::async_trait]
 pub trait NoteRepository: Send + Sync {
-    /// 按 ID 查询单个笔记，不存在返回 `Ok(None)`。
     async fn find_by_id(&self, id: &str) -> Result<Option<Note>, RepoError>;
-    /// 插入一个新笔记。
     async fn insert(&self, note: &Note) -> Result<(), RepoError>;
-    /// 全量更新一个已存在笔记，返回是否真的更新了行。
     async fn update(&self, note: &Note) -> Result<bool, RepoError>;
-    /// 按 ID 删除笔记，返回是否真的删除了行。
     async fn delete(&self, id: &str) -> Result<bool, RepoError>;
-    /// 返回某个任务的全部笔记（按创建时间升序）。
     async fn list_by_task(&self, task_id: &str) -> Result<Vec<Note>, RepoError>;
 }

@@ -1,34 +1,46 @@
-//! 工作单元（南向端口）：把多个仓储写入打包进同一个数据库事务。
+//! 事务（南向端口）：把多个仓储写入打包进同一个数据库事务。
 //!
-//! 需要"要么全部成功、要么全部回滚"的用例（例如"创建任务并同时写首条笔记"），
-//! 应用层不直接接触 SQL，而是通过本端口向 [`UnitOfWorkFactory::begin`] 索要一个
-//! 事务句柄，然后：
+//! 参考生产级 Rust 事务设计（类似 Spring `@Transactional` 但无运行时 AOP）：
 //!
-//! 1. 用 [`UnitOfWork::task_repo`] / [`UnitOfWork::note_repo`] 在事务内写入；
-//! 2. 全部成功则调用 [`UnitOfWork::commit`] 落盘；
-//! 3. 任一步出错返回 `Err`（或直接丢弃工作单元）→ 事务整体回滚。
-//!
-//! 回滚的兜底保证：sqlx 的 `Transaction` 被 `Drop` 时自动回滚，因此即使应用层
-//! 忘记调 `commit`，事务内的写入也不会残留。
+//! - 应用层用例定义事务边界：`TransactionManager::begin()` 开启事务，返回绑定该
+//!   事务的 [`TransactionContext`]。
+//! - 上下文通过关联类型暴露事务内仓储（`ctx.tasks()` / `ctx.notes()`），返回具体
+//!   类型，无 `Box<dyn>` 装箱、无虚表派发。
+//! - `commit(self)` 消费上下文并提交；不调用则上下文 drop 时自动 ROLLBACK。
+//! - 仓储不持有连接池、不自行开启事务，只通过 `&mut` 借用事务内执行 SQL。
 
 use crate::domain::{NoteRepository, RepoError, TaskRepository};
 
-/// 工作单元：一个已开启、尚未提交的事务所绑定的仓储集合。
+/// 事务上下文端口：一个已开启、尚未提交的事务所绑定的仓储集合。
+///
+/// `TaskRepo` / `NoteRepo` 为关联类型，每个实现返回自己的具体仓储类型，并承诺
+/// 满足对应仓储端口（`TaskRepository` / `NoteRepository`），应用层可透明调用。
+/// 仓储通过 `&mut` 借用返回，同一时刻只能借出一个。
 #[async_trait::async_trait]
-pub trait UnitOfWork: Send + Sync {
-    /// 绑定到当前事务的任务仓储。
-    fn task_repo(&self) -> &dyn TaskRepository;
-    /// 绑定到当前事务的笔记仓储。
-    fn note_repo(&self) -> &dyn NoteRepository;
-    /// 提交事务；成功后事务内的全部写入才对其他连接可见。
+pub trait TransactionContext {
+    /// 事务内绑定的任务仓储（实现 [`TaskRepository`]）。
+    type TaskRepo: TaskRepository;
+    /// 事务内绑定的笔记仓储（实现 [`NoteRepository`]）。
+    type NoteRepo: NoteRepository;
+
+    /// 返回事务内绑定的任务仓储（唯一可变借用）。
+    fn tasks(&mut self) -> &mut Self::TaskRepo;
+
+    /// 返回事务内绑定的笔记仓储（唯一可变借用）。
+    fn notes(&mut self) -> &mut Self::NoteRepo;
+
+    /// 提交事务。
     ///
-    /// 未调用本方法就丢弃工作单元，等价于回滚（见模块文档）。
-    async fn commit(&mut self) -> Result<(), RepoError>;
+    /// 消费 `self`：提交后上下文不可再用；不调用则 drop 时自动 ROLLBACK。
+    async fn commit(self) -> Result<(), RepoError>;
 }
 
-/// 工作单元工厂（南向端口）：由南向网关实现，应用层用它开启新事务。
+/// 事务管理器端口：由 south 层实现，应用层通过它开启新事务。
 #[async_trait::async_trait]
-pub trait UnitOfWorkFactory: Send + Sync {
-    /// 开启一个新事务并返回工作单元。
-    async fn begin(&self) -> Result<Box<dyn UnitOfWork>, RepoError>;
+pub trait TransactionManager: Send + Sync + 'static {
+    /// 开启事务时返回的具体上下文类型。
+    type Context: TransactionContext + Send;
+
+    /// 开启新事务并返回绑定该事务的上下文。
+    async fn begin(&self) -> Result<Self::Context, RepoError>;
 }

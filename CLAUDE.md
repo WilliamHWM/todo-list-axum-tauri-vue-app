@@ -52,7 +52,7 @@ cross-cutting concerns.
 |-------|--------------------------|-------------------|----------------|
 | **domain** (core) | `domain/` — entities (`Task`/`Note` with `new`/`update` invariants), **south ports** `TaskRepository`/`NoteRepository` traits, `TaskQuery`/`TaskList`, `DomainError`, `RepoError` | `domain/` — entity interfaces, **south ports** repository interfaces, `validateTaskTitle`/`validateNoteContent` | Business invariants; no framework/HTTP/SQL knowledge |
 | **application** (core) | `application/` — use-case services + **north ports** `TaskUseCase`/`NoteUseCase` (`ports.rs`), DTOs, `ServiceError` | `application/` — Pinia store factories `createTasksStore(repo)`/`createNotesStore(repo)` | Use-case orchestration; depends only on domain south ports via DI, exposes north ports |
-| **south** (gateway) | `south/` — sqlx pool + migration, `SqlxTaskRepository`/`SqlxNoteRepository`, `SqlxUnitOfWorkFactory` (transactions) | `south/` — axios (`http.ts`), `HttpTaskRepository`/`HttpNoteRepository` | Implements domain south ports; all SQL / HTTP details live here |
+| **south** (gateway) | `south/` — sqlx pool + migration, `SqlxTaskRepository`/`SqlxNoteRepository`, `SqlxTransactionManager` + `SqlxTransactionContext`/`TxTaskRepository`/`TxNoteRepository` (transactions) | `south/` — axios (`http.ts`), `HttpTaskRepository`/`HttpNoteRepository` | Implements domain south ports; all SQL / HTTP details live here |
 | **north** (gateway) | `north/` — axum handlers, routes, middleware, `ApiError`/`ApiResponse`/`JsonBody`, `AppState` (holds `Arc<dyn TaskUseCase>`/`Arc<dyn NoteUseCase>`) | `north/` — router, `App.vue`, views, components | HTTP / UI translation only; depends only on application north ports |
 | **shared** | `shared/` — `config.rs`, `time.rs`, `error.rs` | `shared/` — `di.ts` (frontend composition root), `format.ts` | Cross-cutting concerns any layer may use |
 
@@ -123,9 +123,9 @@ Key insight: Axum binds to a random local port (`127.0.0.1:0`), Tauri captures t
 | Frontend | `src/north/` | Router, `App.vue`, views, components (thin, call stores) |
 | Backend (Composition) | `src-tauri/src/lib.rs` | Boot: tracing → config → DB → wire repos/services → Axum → Tauri |
 | Backend (Shared) | `src-tauri/src/shared/` | `config.rs` (`APP_*` env), `time.rs` (UTC RFC3339), `error.rs` (`AppError`) |
-| Backend (Domain) | `src-tauri/src/domain/` | Entities (`task.rs`/`note.rs`), south ports (`repository.rs` + `uow.rs`) with `TaskQuery`/`TaskList` + `UnitOfWork`/`UnitOfWorkFactory`, `DomainError`/`RepoError` |
+| Backend (Domain) | `src-tauri/src/domain/` | Entities (`task.rs`/`note.rs`), south ports (`repository.rs` + `uow.rs`) with `TaskQuery`/`TaskList` + `TransactionContext`/`TransactionManager`, `DomainError`/`RepoError` |
 | Backend (Application) | `src-tauri/src/application/` | `TaskService`/`NoteService` (use cases), north ports (`ports.rs`), DTOs, `ServiceError` |
-| Backend (South) | `src-tauri/src/south/db/` | Pool init (WAL) + `sqlx::migrate!`, `SqlxTaskRepository`/`SqlxNoteRepository`, `SqlxUnitOfWorkFactory` + `SqlxUnitOfWork` (transactions via `UnitOfWork`/`UnitOfWorkFactory` domain ports) |
+| Backend (South) | `src-tauri/src/south/db/` | Pool init (WAL) + `sqlx::migrate!`, `SqlxTaskRepository`/`SqlxNoteRepository`, `SqlxTransactionManager` + `SqlxTransactionContext`/`TxTaskRepository`/`TxNoteRepository` (transactions via `TransactionContext`/`TransactionManager` domain ports) |
 | Backend (North) | `src-tauri/src/north/` | `AppState { tasks: Arc<dyn TaskUseCase>, notes: Arc<dyn NoteUseCase>, config }`, handlers, routes, `ApiError`/`ApiResponse`/`JsonBody` |
 | Migrations | `src-tauri/migrations/` | Versioned SQL, tracked by `_sqlx_migrations` |
 | Config | `package.json`, `vite.config.ts` | Frontend scripts, `@` alias, vendor chunks |
@@ -134,8 +134,8 @@ Key insight: Axum binds to a random local port (`127.0.0.1:0`), Tauri captures t
 ### Important Patterns
 
 - **Layering**: north → application → domain, with south implementing domain ports. Handlers never write SQL; repos never build HTTP responses; entities hold invariants.
-- **DI**: services hold `Arc<dyn TaskRepository>` / `Arc<dyn NoteRepository>` (south) trait objects, plus `Arc<dyn UnitOfWorkFactory>` for multi-write use cases; the north gateway holds `Arc<dyn TaskUseCase>` / `Arc<dyn NoteUseCase>` (north). Tests inject the same sqlx adapters against a temp DB.
-- **Transactions (Unit of Work)**: multi-statement writes go through `UnitOfWorkFactory::begin()` → `UnitOfWork` (SQLite transaction). The tx-backed repos reuse the same SQL via `Executor` helpers; plain `&Pool` queries use the same functions with `&Pool` implementing `Executor`. Example: `create_task_with_note` (POST `/api/tasks/with-note`).
+- **DI**: services hold `Arc<dyn TaskRepository>` / `Arc<dyn NoteRepository>` (south) trait objects; multi-write use cases hold `Arc<M: TransactionManager>` (application is generic over the domain port), and `ctx.tasks()`/`ctx.notes()` expose tx-bound repos. The north gateway holds `Arc<dyn TaskUseCase>` / `Arc<dyn NoteUseCase>` (north). Tests inject the same sqlx adapters against a temp DB.
+- **Transactions (Transaction Context)**: multi-statement writes go through `TransactionManager::begin()` → `TransactionContext` (SQLite transaction, concrete type, no boxing). `ctx.tasks()`/`ctx.notes()` give tx-bound repos that reuse the same SQL via `Executor` helpers; plain `&Pool` queries use the same functions with `&Pool` implementing `Executor`. `commit(self)` consumes the context (auto-rollback on drop). Example: `create_task_with_note` (POST `/api/tasks/with-note`).
 - **Validation**: domain entities enforce invariants in `new`/`update`; `JsonBody` maps JSON parse failures to 400 + envelope.
 - **CORS**: `tower_http::cors` allows any origin — safe, everything binds to `127.0.0.1` only.
 - **Request logging**: `TraceLayer` records method, URI, status, latency per request.

@@ -43,16 +43,21 @@ pub async fn run() {
 
     // --- 南向网关：连接池 + 迁移 ----------------------------------------------
     let pool = south::db::init_pool(&config).await.unwrap_or_else(|e| {
-        panic!("failed to initialize SQLite database: {e}");
+        eprintln!("failed to initialize database: {e}");
+        std::process::exit(1);
     });
     tracing::info!("database pool initialized and migrations applied");
+
+    // 预热连接池：取出一条连接并立即归还。配置错误（URL 无效、迁移约束违规等）
+    // 在此阶段就能暴露，而不是等到首个 HTTP 请求超时。
+    pool.acquire().await.expect("database pool warmup failed");
 
     // --- 装配：南向适配器 → 用例服务（北向端口实现）→ 北向网关状态 -----------------
     let task_repo = Arc::new(south::SqlxTaskRepository::new(pool.clone()));
     let note_repo = Arc::new(south::SqlxNoteRepository::new(pool.clone()));
-    let uow = Arc::new(south::SqlxUnitOfWorkFactory::new(pool));
+    let tx_manager = Arc::new(south::SqlxTransactionManager::new(pool));
     let tasks: Arc<dyn application::TaskUseCase> =
-        Arc::new(application::TaskService::new(task_repo, uow));
+        Arc::new(application::TaskService::new(task_repo, tx_manager));
     let notes: Arc<dyn application::NoteUseCase> =
         Arc::new(application::NoteService::new(note_repo));
     let state = north::AppState {
@@ -62,6 +67,8 @@ pub async fn run() {
     };
 
     // --- API 服务器（北向网关）-------------------------------------------------
+    // Axum 与 Tauri 在同一进程内运行，生命周期绑定；Tauri 退出时进程终止，
+    // Axum 服务随之结束，无需单独的 abort。
     let app = north::create_router(state);
     let listener = TcpListener::bind((config.host.as_str(), config.port))
         .await
@@ -72,6 +79,7 @@ pub async fn run() {
     let port = addr.port();
     tracing::info!(%addr, "Axum API server started");
 
+    // 后台运行 Axum 服务；panic 时由 `app.run()` 的 propagate_panic 行为处理。
     let axum_handle = tokio::spawn(async move {
         if let Err(error) = axum::serve(listener, app).await {
             tracing::error!(?error, "Axum server stopped unexpectedly");

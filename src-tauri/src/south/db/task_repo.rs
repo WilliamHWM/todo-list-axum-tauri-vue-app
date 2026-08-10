@@ -1,4 +1,4 @@
-﻿//! 任务仓储的 sqlx 适配器：领域端口 → SQLite 具体实现。
+//! 任务仓储的 sqlx 适配器：领域端口 → SQLite 具体实现。
 //!
 //! SQL 语句封装成接受任意 [`Executor`] 的 `pub(crate)` 助手函数（连接池 `&Pool`
 //! 或事务 `&mut Transaction` 均可用），供 [`super::SqlxTaskRepository`]（普通路径）
@@ -10,10 +10,8 @@ use sqlx::query_builder::QueryBuilder;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Executor, Row, Sqlite};
 
-/// 查询列清单，行转实体时复用。
 const SELECT_COLS: &str = "id, title, completed, created_at";
 
-/// 追加可选的 WHERE 条件；值一律走参数绑定，杜绝 SQL 注入。
 fn push_conditions(builder: &mut QueryBuilder<Sqlite>, q: &TaskQuery) {
     builder.push(" WHERE 1=1");
     if let Some(keyword) = q.keyword.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
@@ -26,7 +24,6 @@ fn push_conditions(builder: &mut QueryBuilder<Sqlite>, q: &TaskQuery) {
     }
 }
 
-/// 排序白名单：公开排序键 → 实际列名，避免动态拼接注入。
 fn sort_clause(sort: Option<&str>, sort_dir: Option<&str>) -> String {
     let column = match sort {
         Some("title") => "title",
@@ -39,7 +36,6 @@ fn sort_clause(sort: Option<&str>, sort_dir: Option<&str>) -> String {
     format!("ORDER BY {column} {direction}")
 }
 
-/// sqlx 行 → 领域实体（原始数据重建，跳过校验）。
 fn map_task(row: &SqliteRow) -> Result<Task, RepoError> {
     Ok(Task::rebuild(
         row.try_get("id")?,
@@ -53,7 +49,6 @@ fn map_task(row: &SqliteRow) -> Result<Task, RepoError> {
 // Executor 助手：`E` 可以是 `&Pool`（独立语句）或 `&mut Transaction`（事务内）。
 // ---------------------------------------------------------------------------
 
-/// 按 ID 查询单个任务。
 pub(crate) async fn find_task_by_id<'e, E>(
     executor: E,
     id: &str,
@@ -68,7 +63,6 @@ where
     row.as_ref().map(map_task).transpose()
 }
 
-/// 插入一个新任务。
 pub(crate) async fn insert_task<'e, E>(executor: E, task: &Task) -> Result<(), RepoError>
 where
     E: Executor<'e, Database = Sqlite>,
@@ -85,7 +79,6 @@ where
     Ok(())
 }
 
-/// 全量更新一个已存在任务，返回是否真的更新了行。
 pub(crate) async fn update_task<'e, E>(executor: E, task: &Task) -> Result<bool, RepoError>
 where
     E: Executor<'e, Database = Sqlite>,
@@ -99,7 +92,6 @@ where
     Ok(result.rows_affected() > 0)
 }
 
-/// 按 ID 删除任务，返回是否真的删除了行。
 pub(crate) async fn delete_task<'e, E>(executor: E, id: &str) -> Result<bool, RepoError>
 where
     E: Executor<'e, Database = Sqlite>,
@@ -111,8 +103,10 @@ where
     Ok(result.rows_affected() > 0)
 }
 
-/// 统计符合条件的任务总数。
-pub(crate) async fn count_tasks<'e, E>(executor: E, query: &TaskQuery) -> Result<i64, RepoError>
+pub(crate) async fn count_tasks<'e, E>(
+    executor: E,
+    query: &TaskQuery,
+) -> Result<i64, RepoError>
 where
     E: Executor<'e, Database = Sqlite>,
 {
@@ -122,8 +116,10 @@ where
     Ok(count_builder.build_query_scalar().fetch_one(executor).await?)
 }
 
-/// 按条件过滤 + 排序 + 分页查询任务列表。
-pub(crate) async fn list_tasks<'e, E>(executor: E, query: &TaskQuery) -> Result<Vec<Task>, RepoError>
+pub(crate) async fn list_tasks<'e, E>(
+    executor: E,
+    query: &TaskQuery,
+) -> Result<Vec<Task>, RepoError>
 where
     E: Executor<'e, Database = Sqlite>,
 {
@@ -144,7 +140,7 @@ where
     rows.iter().map(map_task).collect()
 }
 
-/// 基于 SQLite 的 `TaskRepository` 实现。
+/// 基于 SQLite 的 `TaskRepository` 实现（非事务路径）。
 #[derive(Clone)]
 pub struct SqlxTaskRepository {
     pool: Pool,

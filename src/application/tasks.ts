@@ -33,7 +33,7 @@ export function createTasksStore(repo: TaskRepository) {
     const notesTaskId = ref<string | null>(null);
 
     // --- 派生状态 ---------------------------------------------------------------
-    const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)));
+    const totalPages = computed          (() => Math.max(1, Math.ceil(total.value / pageSize)));
     const completedCount = computed(() => tasks.value.filter((t) => t.completed).length);
     const notesTask = computed(
       () => tasks.value.find((t) => t.id === notesTaskId.value) ?? null,

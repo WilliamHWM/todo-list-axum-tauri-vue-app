@@ -14,4 +14,4 @@ pub use error::DomainError;
 pub use note::Note;
 pub use repository::{NoteRepository, RepoError, TaskList, TaskQuery, TaskRepository};
 pub use task::Task;
-pub use uow::{UnitOfWork, UnitOfWorkFactory};
+pub use uow::{TransactionContext, TransactionManager};
