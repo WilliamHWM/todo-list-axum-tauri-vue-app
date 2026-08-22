@@ -35,20 +35,41 @@ impl From<sqlx::Error> for crate::domain::RepoError {
 
 /// 创建连接池并应用待执行的迁移。
 ///
-/// SQLite 开启 WAL 日志模式（读写并发更好）与忙等待超时；迁移位于 `migrations/`，
-/// 通过 `_sqlx_migrations` 表跟踪，已应用的脚本自动跳过。
+/// ## 连接选项（对照 sqlx 0.8 默认，显式固化关键行为）
+///
+/// - `foreign_keys(true)`：sqlx 默认开启外键，但显式声明把"默认行为"固化成代码契约，
+///   防止升级小版本 / 更换驱动时漂移（外键回滚测试依赖此约束）。
+/// - `journal_mode(Wal)`：WAL 不是默认，读写并发更好，必须显式设置。
+/// - `synchronous(Normal)`：WAL 下的合理折中——比默认 FULL 更快，最坏仅丢失最近一次
+///   已提交事务，不会损坏数据库；本地单用户场景完全够用。
+/// - `busy_timeout`：取锁等待超时，与默认 5s 一致。
+///
+/// ## 连接池参数
+///
+/// SQLite 每个连接对应一个后台线程，故 `max_connections` 默认 5 即足够，不开大；
+/// `min_connections(1)` 常驻一条连接避免冷启动抖动；`acquire_timeout` 让取不到连接时
+/// 快速失败而非挂起；`idle_timeout` / `max_lifetime` 回收空闲或过长连接。
 pub async fn init_pool(config: &AppConfig) -> Result<Pool, AppError> {
     let options = SqliteConnectOptions::from_str(&config.database_url)?
         .create_if_missing(true)
+        .foreign_keys(true)
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Normal)
         .busy_timeout(Duration::from_secs(5));
 
     let pool = SqlitePoolOptions::new()
+        .min_connections(1)
         .max_connections(config.db_max_connections)
+        .acquire_timeout(Duration::from_secs(5))
+        .idle_timeout(Duration::from_secs(60))
+        .max_lifetime(Duration::from_secs(30 * 60))
         .connect_with(options)
         .await?;
 
+    // `sqlx::migrate!` 在编译期把 `migrations/` 目录内嵌进二进制，运行时并不读取磁盘
+    // 目录，因此 Tauri 打包后 cwd 变为 exe 目录也不会导致迁移失败。这里仍通过
+    // `bundle.resources` 把 `migrations/` 带进安装包（见 `tauri.conf.json`）作为冗余保险。
+    // 已应用的脚本由 `_sqlx_migrations` 表跟踪，自动跳过。
     sqlx::migrate!("./migrations")
         .run(&pool)
         .await

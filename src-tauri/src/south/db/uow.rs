@@ -224,7 +224,7 @@ impl TransactionContext for SqlxTransactionContext {
 /// 事务管理器：从连接池开启新事务，返回具体上下文（无 `Box<dyn>`、无虚表）。
 #[derive(Clone)]
 pub struct SqlxTransactionManager {
-    pub pool: super::Pool,
+    pool: super::Pool,
 }
 
 impl SqlxTransactionManager {
@@ -342,5 +342,62 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(commits, 1);
+    }
+
+    /// `with_tx` 成功路径：自动提交，任务与笔记均持久化。
+    #[tokio::test]
+    async fn with_tx_commits_on_success() {
+        let pool = test_pool().await;
+        let manager = SqlxTransactionManager::new(pool.clone());
+
+        let task = Task::new("with_tx 任务").expect("valid task");
+        let note = Note::new(Some(task.id().to_owned()), "with_tx 笔记").expect("valid note");
+        manager
+            .with_tx(move |ctx| {
+                Box::pin(async move {
+                    ctx.tasks().insert(&task).await?;
+                    ctx.notes().insert(&note).await?;
+                    Ok(())
+                })
+            })
+            .await
+            .expect("with_tx should commit");
+
+        let tasks: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM tasks").fetch_one(&pool).await.unwrap();
+        let notes: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM notes").fetch_one(&pool).await.unwrap();
+        assert_eq!(tasks, 1, "with_tx 提交后任务应可见");
+        assert_eq!(notes, 1, "with_tx 提交后笔记应可见");
+    }
+
+    /// `with_tx` 失败路径：work 返回 Err → 自动 ROLLBACK，任务不留痕。
+    #[tokio::test]
+    async fn with_tx_rolls_back_on_error() {
+        let pool = test_pool().await;
+        let manager = SqlxTransactionManager::new(pool.clone());
+
+        let task = Task::new("会被回滚的任务").expect("valid task");
+        let bad_note = Note::rebuild(
+            Uuid::new_v4().to_string(),
+            Some("no-such-task".to_owned()),
+            "内容".to_owned(),
+            "2026-01-01T00:00:00.000Z".to_owned(),
+        );
+        let result = manager
+            .with_tx(move |ctx| {
+                Box::pin(async move {
+                    ctx.tasks().insert(&task).await?;
+                    // 外键约束失败 → Err → with_tx 返回 Err，ctx drop 自动回滚
+                    ctx.notes().insert(&bad_note).await?;
+                    Ok(())
+                })
+            })
+            .await;
+        assert!(result.is_err(), "外键应拦截无效笔记");
+
+        let tasks: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM tasks").fetch_one(&pool).await.unwrap();
+        assert_eq!(tasks, 0, "回滚后任务不应残留");
     }
 }

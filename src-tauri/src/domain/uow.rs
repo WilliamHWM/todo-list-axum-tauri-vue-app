@@ -10,6 +10,7 @@
 //! - 仓储不持有连接池、不自行开启事务，只通过 `&mut` 借用事务内执行 SQL。
 
 use crate::domain::{NoteRepository, RepoError, TaskRepository};
+use std::future::Future;
 
 /// 事务上下文端口：一个已开启、尚未提交的事务所绑定的仓储集合。
 ///
@@ -43,4 +44,33 @@ pub trait TransactionManager: Send + Sync + 'static {
 
     /// 开启新事务并返回绑定该事务的上下文。
     async fn begin(&self) -> Result<Self::Context, RepoError>;
+
+    /// 在单个事务内执行 `work`：成功自动 `COMMIT`，出错或 panic 则上下文 drop 自动
+    /// `ROLLBACK`。
+    ///
+    /// 所有写路径都应走这里，把"必提交 / 必回滚"收敛到一处，从结构上隔离非事务仓储、
+    /// 抹掉"漏提交 / 漏回滚"这一整类错误。失败时 `Err` 直接返回（上下文在此 drop →
+    /// 自动回滚），不重复提交。
+    ///
+    /// `work` 接收事务上下文 `&mut Self::Context`，返回需经 `Box::pin` 装箱的异步块；
+    /// 装箱是为了让返回的 `Future` 能合法借用上下文（HRTB 约束）。
+    async fn with_tx<F, T>(&self, work: F) -> Result<T, RepoError>
+    where
+        for<'a> F: FnOnce(
+            &'a mut Self::Context,
+        ) -> std::pin::Pin<
+            Box<dyn Future<Output = Result<T, RepoError>> + Send + 'a>,
+        > + Send,
+        T: Send,
+    {
+        let mut ctx = self.begin().await?;
+        let result = work(&mut ctx).await;
+        match result {
+            Ok(value) => {
+                ctx.commit().await?;
+                Ok(value)
+            }
+            Err(e) => Err(e),
+        }
+    }
 }

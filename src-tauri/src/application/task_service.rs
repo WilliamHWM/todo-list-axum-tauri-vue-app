@@ -7,11 +7,12 @@
 //! ## 事务处理
 //!
 //! 跨仓储的原子用例（如 [`TaskService::create_task_with_note`]）通过注入的
-//! [`TransactionManager`]（领域南向端口）开启事务，应用层不感知任何 sqlx 类型：
+//! [`TransactionManager`]（领域南向端口）开启事务，应用层不感知任何 sqlx 类型。所有
+//! 写路径统一走 [`TransactionManager::with_tx`]，把"必提交 / 必回滚"收敛到一处：
 //!
-//! - `tx_manager.begin()` 返回绑定事务的 [`TransactionContext`]（具体类型，无装箱）
+//! - `with_tx` 内部 `begin()` 返回绑定事务的 [`TransactionContext`]（具体类型，无装箱）
 //! - 事务内通过 `ctx.tasks()` / `ctx.notes()` 获取仓储执行写入
-//! - `ctx.commit()` 消费上下文并提交；任一步出错 → 上下文 drop → 自动 ROLLBACK
+//! - 成功自动 `COMMIT`；任一步出错 → 上下文 drop → 自动 ROLLBACK，杜绝漏提交/漏回滚
 
 use crate::application::error::ServiceError;
 use crate::application::ports::TaskUseCase;
@@ -52,24 +53,28 @@ impl<M: TransactionManager> TaskUseCase for TaskService<M> {
         Ok(task)
     }
 
-    /// 原子创建任务并附带首条笔记。
+    /// 原子创建任务并附带首条笔记（同一事务，要么都成功要么都回滚）。
     ///
-    /// 事务边界在此用例开启：
-    /// 1. `tx_manager.begin()` 开启 SQLite `BEGIN` 事务，返回具体的事务上下文
-    /// 2. 事务内插入任务（`ctx.tasks()`）
-    /// 3. 事务内插入笔记（`ctx.notes()`）
-    /// 4. `ctx.commit()` 提交；任一步 `Err` → 上下文 drop → 自动 ROLLBACK
+    /// 事务通过 [`TransactionManager::with_tx`] 收敛：成功自动 COMMIT，任何错误
+    /// 自动 ROLLBACK。实体先在校验阶段构造——校验失败（如标题为空）直接返回领域错误，
+    /// 不会无谓开启事务。
     async fn create_task_with_note(
         &self,
         dto: CreateTaskWithNoteDto,
     ) -> Result<Task, ServiceError> {
-        let mut ctx = self.tx_manager.begin().await?;
         let task = Task::new(&dto.title)?;
-        ctx.tasks().insert(&task).await?;
         let note = Note::new(Some(task.id().to_owned()), &dto.content)?;
-        ctx.notes().insert(&note).await?;
-        ctx.commit().await?;
-        Ok(task)
+        let created = self
+            .tx_manager
+            .with_tx(move |ctx| {
+                Box::pin(async move {
+                    ctx.tasks().insert(&task).await?;
+                    ctx.notes().insert(&note).await?;
+                    Ok(task)
+                })
+            })
+            .await?;
+        Ok(created)
     }
 
     /// 更新任务：加载 → 应用变更 → 持久化。
