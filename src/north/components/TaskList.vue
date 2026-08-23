@@ -1,19 +1,32 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { Search } from "@element-plus/icons-vue";
-import { useTasksStore } from "@/shared/di";
+import { useTasksStore, useNotesStore } from "@/shared/di";
 import { formatDateTime } from "@/shared/format";
 import NotesPanel from "@/north/components/NotesPanel.vue";
-import type { TaskFilter } from "@/domain/task";
+import type { Task, TaskFilter } from "@/domain/task";
 
 const store = useTasksStore();
+const notesStore = useNotesStore();
 
+// 抽屉状态属于「仅本组件使用的 UI 瞬态」，下沉为局部 ref，关掉抽屉即作废。
+const drawerTask = ref<Task | null>(null);
 const drawerVisible = computed({
-  get: () => store.notesTaskId !== null,
+  get: () => drawerTask.value !== null,
   set: (visible: boolean) => {
-    if (!visible) store.closeNotes();
+    if (!visible) drawerTask.value = null;
   },
 });
+
+function openNotes(task: Task): void {
+  drawerTask.value = task;
+}
+
+async function handleRemove(task: Task): Promise<void> {
+  await store.removeTask(task);
+  notesStore.clearTaskCache(task.id); // 任务删除后其笔记缓存一并失效
+  if (drawerTask.value?.id === task.id) drawerTask.value = null;
+}
 
 function onFilterChange(value: string | number | boolean | undefined) {
   store.filter = (value as TaskFilter) ?? "all";
@@ -62,8 +75,8 @@ onMounted(() => store.loadTasks());
 
     <el-table
       :data="store.tasks"
-      v-loading="store.isLoading"
-      :empty-text="store.isLoading ? '正在加载任务…' : '这里还没有任务，添加一个开始吧。'"
+      v-loading="store.isRefreshing"
+      :empty-text="store.isInitialLoading ? '正在加载任务…' : '这里还没有任务，添加一个开始吧。'"
       row-key="id"
     >
       <el-table-column width="48" align="center">
@@ -105,13 +118,13 @@ onMounted(() => store.loadTasks());
             <el-button size="small" @click="store.cancelEdit()">取消</el-button>
           </template>
           <template v-else>
-            <el-button size="small" text type="primary" @click="store.openNotes(row.id)">
-              笔记
-            </el-button>
-            <el-button size="small" text @click="store.startEdit(row)">编辑</el-button>
-            <el-button size="small" text type="danger" @click="store.removeTask(row)">
-              删除
-            </el-button>
+            <el-button size="small" text type="primary" @click="openNotes(row)">
+               笔记
+             </el-button>
+             <el-button size="small" text @click="store.startEdit(row)">编辑</el-button>
+             <el-button size="small" text type="danger" @click="handleRemove(row)">
+               删除
+             </el-button>
           </template>
         </template>
       </el-table-column>
@@ -132,11 +145,10 @@ onMounted(() => store.loadTasks());
 
   <el-drawer
     v-model="drawerVisible"
-    :title="store.notesTask ? `笔记 · ${store.notesTask.title}` : '笔记'"
+    :title="drawerTask ? `笔记 · ${drawerTask.title}` : '笔记'"
     size="400px"
-    @closed="store.closeNotes()"
   >
-    <NotesPanel v-if="store.notesTask" :task-id="store.notesTask.id" />
+    <NotesPanel v-if="drawerTask" :task-id="drawerTask.id" />
   </el-drawer>
 </template>
 

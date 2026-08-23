@@ -25,7 +25,7 @@ watch(() => props.taskId, load);
 
 <template>
   <section class="notes-panel">
-    <el-skeleton v-if="store.isLoading" :rows="3" animated />
+    <el-skeleton v-if="store.isInitialLoading" :rows="3" animated />
 
     <template v-else>
       <el-empty

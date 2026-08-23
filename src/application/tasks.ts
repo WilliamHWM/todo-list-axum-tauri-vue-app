@@ -3,6 +3,11 @@
  *
  * 所有任务相关的 UI 状态与异步动作集中在这里；组件只负责渲染与事件转发。
  * store 面向领域端口 `TaskRepository` 编程，实现由组合根注入，不直接依赖 HTTP。
+ *
+ * 设计要点（对照 DDD 菱形架构的"服务端数据 / 查询条件 / UI 瞬态"分居）：
+ * - 服务端数据（`tasks`/`total`）只保真，写操作走乐观更新 + 失败回滚，避免整表重拉；
+ * - 加载状态拆为「首载」与「后台刷新」，避免表格闪烁；
+ * - `loadSeq` 版本号防止快速翻页/筛选时的请求竞态。
  */
 
 import { computed, ref } from "vue";
@@ -12,54 +17,66 @@ import type { Task, TaskFilter } from "@/domain/task";
 import { validateTaskTitle } from "@/domain/task";
 import type { TaskRepository } from "@/domain/repository";
 
+/** 单页条数（原硬编码值提成常量）。 */
+const PAGE_SIZE = 20;
+
 /** 创建任务用例 store；`repo` 为组合根注入的仓储实现。 */
 export function createTasksStore(repo: TaskRepository) {
   return defineStore("tasks", () => {
-    // --- 列表数据 ------------------------------------------------------------
+    // --- 服务端数据 ------------------------------------------------------------
     const tasks = ref<Task[]>([]);
     const total = ref(0);
-    const isLoading = ref(false);
+    /** `loadTasks` 请求版本号：后发的请求覆盖先发，过期的旧结果直接丢弃。 */
+    const loadSeq = ref(0);
+
+    // --- 加载状态：首载（骨架屏）/ 后台刷新（表格不闪）------------------------
+    const hasLoaded = ref(false);
+    const isInitialLoading = ref(false);
+    const isRefreshing = ref(false);
+
     const isSubmitting = ref(false);
 
     // --- 查询条件 --------------------------------------------------------------
     const filter = ref<TaskFilter>("all");
     const keyword = ref("");
     const page = ref(1);
-    const pageSize = 20;
 
-    // --- 行内编辑 / 笔记抽屉 ----------------------------------------------------
+    // --- 行内编辑（仅本列表内共享的 UI 瞬态）---------------------------------
     const editingId = ref<string | null>(null);
     const editingTitle = ref("");
-    const notesTaskId = ref<string | null>(null);
 
     // --- 派生状态 ---------------------------------------------------------------
-    const totalPages = computed          (() => Math.max(1, Math.ceil(total.value / pageSize)));
+    const totalPages = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)));
     const completedCount = computed(() => tasks.value.filter((t) => t.completed).length);
-    const notesTask = computed(
-      () => tasks.value.find((t) => t.id === notesTaskId.value) ?? null,
-    );
 
     // --- 动作 -------------------------------------------------------------------
 
-    /** 按当前筛选/搜索/分页条件拉取任务列表。 */
+    /** 按当前筛选/搜索/分页条件拉取任务列表（带竞态防护）。 */
     async function loadTasks(): Promise<void> {
-      isLoading.value = true;
+      const seq = ++loadSeq.value;
+      if (!hasLoaded.value) isInitialLoading.value = true;
+      else isRefreshing.value = true;
       try {
         const result = await repo.search({
           keyword: keyword.value.trim() || undefined,
-          completed:
-            filter.value === "all" ? undefined : filter.value === "completed",
+          completed: filter.value === "all" ? undefined : filter.value === "completed",
           sort: "createdAt",
           sortDir: "desc",
-          limit: pageSize,
-          offset: (page.value - 1) * pageSize,
+          limit: PAGE_SIZE,
+          offset: (page.value - 1) * PAGE_SIZE,
         });
+        if (seq !== loadSeq.value) return; // 已有更新的请求，丢弃本次过期结果
         tasks.value = result.items;
         total.value = result.total;
+        hasLoaded.value = true;
       } catch (error) {
+        if (seq !== loadSeq.value) return;
         ElMessage.error((error as Error).message);
       } finally {
-        isLoading.value = false;
+        if (seq === loadSeq.value) {
+          isInitialLoading.value = false;
+          isRefreshing.value = false;
+        }
       }
     }
 
@@ -83,9 +100,21 @@ export function createTasksStore(repo: TaskRepository) {
       }
       isSubmitting.value = true;
       try {
-        await repo.create(title);
+        const created = await repo.create(title);
+        // 乐观插入：仅当新任务必然出现在当前视图（首页 + 筛选/搜索命中）时直接前置
+        // 并自增计数，避免整表重拉；否则兜底刷新一次以贴合筛选/分页。
+        const kw = keyword.value.trim().toLowerCase();
+        const visible =
+          page.value === 1 &&
+          (filter.value === "all" || filter.value === "active") &&
+          (kw === "" || created.title.toLowerCase().includes(kw));
+        if (visible) {
+          tasks.value = [created, ...tasks.value];
+          total.value += 1;
+        } else {
+          await loadTasks();
+        }
         ElMessage.success("任务已创建");
-        await loadTasks();
         return true;
       } catch (err) {
         ElMessage.error((err as Error).message);
@@ -95,13 +124,16 @@ export function createTasksStore(repo: TaskRepository) {
       }
     }
 
-    /** 切换完成状态。 */
+    /** 切换完成状态：本地先变，失败回滚。 */
     async function toggleTask(task: Task): Promise<void> {
+      const index = tasks.value.findIndex((t) => t.id === task.id);
+      const completed = !task.completed;
+      if (index !== -1) tasks.value.splice(index, 1, { ...task, completed }); // 乐观
       try {
-        await repo.update(task.id, { completed: !task.completed });
-        await loadTasks();
-      } catch (error) {
-        ElMessage.error((error as Error).message);
+        await repo.update(task.id, { completed });
+      } catch (err) {
+        if (index !== -1) tasks.value.splice(index, 1, task); // 回滚
+        ElMessage.error((err as Error).message);
       }
     }
 
@@ -114,25 +146,31 @@ export function createTasksStore(repo: TaskRepository) {
       editingId.value = null;
     }
 
-    /** 保存行内编辑的标题。 */
+    /** 保存行内编辑的标题：本地先改，失败回滚。 */
     async function saveEdit(): Promise<void> {
       if (!editingId.value) return;
+      const id = editingId.value;
       const error = validateTaskTitle(editingTitle.value);
       if (error) {
         ElMessage.error(error);
         return;
       }
+      const index = tasks.value.findIndex((t) => t.id === id);
+      const prev = index !== -1 ? tasks.value[index] : null;
+      if (prev && index !== -1) {
+        tasks.value.splice(index, 1, { ...prev, title: editingTitle.value.trim() }); // 乐观
+      }
       try {
-        await repo.update(editingId.value, { title: editingTitle.value.trim() });
+        await repo.update(id, { title: editingTitle.value.trim() });
         editingId.value = null;
         ElMessage.success("已保存");
-        await loadTasks();
       } catch (err) {
+        if (prev && index !== -1) tasks.value.splice(index, 1, prev); // 回滚
         ElMessage.error((err as Error).message);
       }
     }
 
-    /** 删除任务（带确认弹窗）。 */
+    /** 删除任务（带确认弹窗）：本地先移除，失败回插。 */
     async function removeTask(task: Task): Promise<void> {
       try {
         await ElMessageBox.confirm(`确定删除“${task.title}”吗？`, "删除确认", {
@@ -144,39 +182,34 @@ export function createTasksStore(repo: TaskRepository) {
       } catch {
         return; // 用户取消
       }
+      const index = tasks.value.findIndex((t) => t.id === task.id);
+      const backup = index !== -1 ? tasks.value[index] : null;
+      if (index !== -1) tasks.value.splice(index, 1); // 乐观移除
+      total.value = Math.max(0, total.value - 1);
       try {
         await repo.remove(task.id);
-        if (notesTaskId.value === task.id) notesTaskId.value = null;
         ElMessage.success("已删除");
-        await loadTasks();
-      } catch (error) {
-        ElMessage.error((error as Error).message);
+      } catch (err) {
+        if (backup) tasks.value.splice(index, 0, backup); // 回滚
+        total.value += 1;
+        ElMessage.error((err as Error).message);
       }
-    }
-
-    function openNotes(taskId: string): void {
-      notesTaskId.value = taskId;
-    }
-
-    function closeNotes(): void {
-      notesTaskId.value = null;
     }
 
     return {
       tasks,
       total,
-      isLoading,
+      isInitialLoading,
+      isRefreshing,
       isSubmitting,
       filter,
       keyword,
       page,
-      pageSize,
+      pageSize: PAGE_SIZE,
       editingId,
       editingTitle,
-      notesTaskId,
       totalPages,
       completedCount,
-      notesTask,
       loadTasks,
       applyFilters,
       goToPage,
@@ -186,8 +219,6 @@ export function createTasksStore(repo: TaskRepository) {
       cancelEdit,
       saveEdit,
       removeTask,
-      openNotes,
-      closeNotes,
     };
   });
 }
