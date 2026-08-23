@@ -35,4 +35,12 @@ export class HttpTaskRepository implements TaskRepository {
       method: "DELETE",
     });
   }
+
+  assignCategory(taskId: string, categoryId: string | null): Promise<Task> {
+    return request<Task>({
+      url: `/tasks/${encodeURIComponent(taskId)}/category`,
+      method: "PUT",
+      data: { categoryId },
+    });
+  }
 }

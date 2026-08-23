@@ -16,6 +16,12 @@ pub enum DomainError {
     NoteContentEmpty,
     #[error("笔记内容必须是 1 到 5000 个字符。")]
     NoteContentTooLong,
+    #[error("分类名称不能为空。")]
+    CategoryNameEmpty,
+    #[error("分类名称必须是 1 到 40 个字符。")]
+    CategoryNameTooLong,
+    #[error("分类不存在或已被删除。")]
+    CategoryNotFound,
     #[error("至少提供一个需要更新的字段。")]
     EmptyUpdate,
     #[error("任务不存在或已被删除。")]

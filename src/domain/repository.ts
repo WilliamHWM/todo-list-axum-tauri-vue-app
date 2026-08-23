@@ -9,14 +9,23 @@
  * 本文件只保留"端口接口"这一类前端专属抽象。
  */
 
-import type { TaskQuery, TaskList } from "./generated";
-import type { UpdateTaskDto, CreateNoteDto, UpdateNoteDto } from "./generated";
+import type {
+	Category,
+	CreateCategoryDto,
+	CreateNoteDto,
+	TaskQuery,
+	TaskList,
+	UpdateCategoryDto,
+	UpdateNoteDto,
+	UpdateTaskDto,
+} from "./generated";
 import type { Task } from "./task";
 import type { Note } from "./note";
 
 export type { TaskQuery, TaskList };
 export type { Task } from "./task";
 export type { Note } from "./note";
+export type { Category } from "./generated";
 
 /** `PUT /api/tasks/:id` 的请求体（由 typeshare 从 `UpdateTaskDto` 生成）。 */
 export type UpdateTaskInput = UpdateTaskDto;
@@ -27,18 +36,35 @@ export type CreateNoteInput = CreateNoteDto;
 /** `PUT /api/notes/:id` 的请求体（由 typeshare 从 `UpdateNoteDto` 生成）。 */
 export type UpdateNoteInput = UpdateNoteDto;
 
+/** `POST /api/categories` 的请求体（由 typeshare 从 `CreateCategoryDto` 生成）。 */
+export type CreateCategoryInput = CreateCategoryDto;
+
+/** `PUT /api/categories/:id` 的请求体（由 typeshare 从 `UpdateCategoryDto` 生成）。 */
+export type UpdateCategoryInput = UpdateCategoryDto;
+
 /** 任务仓储端口。 */
 export interface TaskRepository {
-  search(query: TaskQuery): Promise<TaskList>;
-  create(title: string): Promise<Task>;
-  update(id: string, input: UpdateTaskInput): Promise<Task>;
-  remove(id: string): Promise<void>;
+	search(query: TaskQuery): Promise<TaskList>;
+	create(title: string): Promise<Task>;
+	update(id: string, input: UpdateTaskInput): Promise<Task>;
+	remove(id: string): Promise<void>;
+	/** 设置任务所属分类（`null` 表示清除归属）。 */
+	assignCategory(taskId: string, categoryId: string | null): Promise<Task>;
 }
 
 /** 笔记仓储端口。 */
 export interface NoteRepository {
-  listByTask(taskId: string): Promise<Note[]>;
-  create(input: CreateNoteInput): Promise<Note>;
-  update(id: string, input: UpdateNoteInput): Promise<Note>;
-  remove(id: string): Promise<void>;
+	listByTask(taskId: string): Promise<Note[]>;
+	create(input: CreateNoteInput): Promise<Note>;
+	update(id: string, input: UpdateNoteInput): Promise<Note>;
+	remove(id: string): Promise<void>;
+}
+
+/** 分类仓储端口（独立聚合，与任务仓储平级互不依赖）。 */
+export interface CategoryRepository {
+	list(): Promise<Category[]>;
+	get(id: string): Promise<Category | null>;
+	create(input: CreateCategoryInput): Promise<Category>;
+	update(id: string, input: UpdateCategoryInput): Promise<Category>;
+	remove(id: string): Promise<void>;
 }

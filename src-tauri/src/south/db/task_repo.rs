@@ -10,7 +10,7 @@ use sqlx::query_builder::QueryBuilder;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Executor, Row, Sqlite};
 
-const SELECT_COLS: &str = "id, title, completed, created_at";
+const SELECT_COLS: &str = "id, title, completed, category_id, created_at";
 
 fn push_conditions(builder: &mut QueryBuilder<Sqlite>, q: &TaskQuery) {
     builder.push(" WHERE 1=1");
@@ -41,6 +41,7 @@ fn map_task(row: &SqliteRow) -> Result<Task, RepoError> {
         row.try_get("id")?,
         row.try_get("title")?,
         row.try_get("completed")?,
+        row.try_get("category_id")?,
         row.try_get("created_at")?,
     ))
 }
@@ -68,11 +69,12 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query(
-        "INSERT INTO tasks (id, title, completed, created_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO tasks (id, title, completed, category_id, created_at) VALUES (?, ?, ?, ?, ?)",
     )
     .bind(task.id())
     .bind(task.title())
     .bind(task.completed())
+    .bind(task.category_id())
     .bind(task.created_at())
     .execute(executor)
     .await?;
@@ -98,6 +100,23 @@ where
 {
     let result = sqlx::query("DELETE FROM tasks WHERE id = ?")
         .bind(id)
+        .execute(executor)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// 仅更新任务的 `category_id` 一列（`None` 置空，关联外键 `SET NULL`）。
+pub(crate) async fn assign_category<'e, E>(
+    executor: E,
+    task_id: &str,
+    category_id: Option<String>,
+) -> Result<bool, RepoError>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let result = sqlx::query("UPDATE tasks SET category_id = ? WHERE id = ?")
+        .bind(category_id)
+        .bind(task_id)
         .execute(executor)
         .await?;
     Ok(result.rows_affected() > 0)
@@ -174,5 +193,13 @@ impl TaskRepository for SqlxTaskRepository {
         let total = count_tasks(&self.pool, query).await? as i32;
         let items = list_tasks(&self.pool, query).await?;
         Ok(TaskList { items, total })
+    }
+
+    async fn assign_category(
+        &self,
+        task_id: &str,
+        category_id: Option<String>,
+    ) -> Result<bool, RepoError> {
+        assign_category(&self.pool, task_id, category_id).await
     }
 }

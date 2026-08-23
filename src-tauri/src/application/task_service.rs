@@ -97,4 +97,21 @@ impl<M: TransactionManager> TaskUseCase for TaskService<M> {
             Err(DomainError::TaskNotFound.into())
         }
     }
+
+    /// 设置任务所属分类：直接改 `category_id` 一列，不影响其它字段。
+    ///
+    /// 空字符串或 `None` 均视为「清除归属」；非空的非法 `category_id` 会被数据库外键
+    /// 约束拒绝（映射为 500）。成功后将最新任务快照返回给调用方做乐观更新。
+    async fn set_category(
+        &self,
+        task_id: &str,
+        category_id: Option<String>,
+    ) -> Result<Task, ServiceError> {
+        let category_id = category_id.filter(|id| !id.is_empty());
+        self.repo.assign_category(task_id, category_id.clone()).await?;
+        self.repo
+            .find_by_id(task_id)
+            .await?
+            .ok_or(DomainError::TaskNotFound.into())
+    }
 }

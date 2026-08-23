@@ -4,6 +4,7 @@ import { Search } from "@element-plus/icons-vue";
 import { useTasksStore, useNotesStore } from "@/shared/di";
 import { formatDateTime } from "@/shared/format";
 import NotesPanel from "@/north/components/NotesPanel.vue";
+import CategorySelect from "@/north/components/CategorySelect.vue";
 import type { Task, TaskFilter } from "@/domain/task";
 
 const store = useTasksStore();
@@ -88,7 +89,16 @@ onMounted(() => store.loadTasks());
         </template>
       </el-table-column>
 
-      <el-table-column label="标题" min-width="240">
+      <el-table-column label="分类" width="160">
+        <template #default="{ row }">
+          <CategorySelect
+            :model-value="row.categoryId"
+            @change="(id: string | null) => store.setCategory(row, id)"
+          />
+        </template>
+      </el-table-column>
+
+      <el-table-column label="标题" min-width="200">
         <template #default="{ row }">
           <el-input
             v-if="store.editingId === row.id"

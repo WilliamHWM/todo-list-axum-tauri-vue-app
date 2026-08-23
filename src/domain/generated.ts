@@ -8,6 +8,31 @@ export interface CreateNoteDto {
 	content: string;
 }
 
+/** 分类聚合（独立聚合根）。 */
+export interface Category {
+	id: string;
+	name: string;
+	color: string;
+	createdAt: string;
+}
+
+/** 创建分类的输入。 */
+export interface CreateCategoryDto {
+	name: string;
+	color?: string;
+}
+
+/** 更新分类的输入（字段全部可选，但至少提供一个）。 */
+export interface UpdateCategoryDto {
+	name?: string;
+	color?: string;
+}
+
+/** 设置任务所属分类的输入（`null` 表示清除归属）。 */
+export interface SetTaskCategoryDto {
+	categoryId?: string | null;
+}
+
 /** 创建任务的输入。 */
 export interface CreateTaskDto {
 	title: string;
@@ -38,6 +63,7 @@ export interface Task {
 	title: string;
 	completed: boolean;
 	createdAt: string;
+	categoryId?: string | null;
 }
 
 /** 分页后的任务列表。 */

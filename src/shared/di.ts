@@ -8,11 +8,16 @@
 
 import { HttpTaskRepository } from "@/south/task-repository";
 import { HttpNoteRepository } from "@/south/note-repository";
+import { HttpCategoryRepository } from "@/south/category-repository";
 import { createTasksStore } from "@/application/tasks";
 import { createNotesStore } from "@/application/notes";
+import { createCategoriesStore } from "@/application/categories";
 
 /** 全局唯一的任务用例 store。 */
 export const useTasksStore = createTasksStore(new HttpTaskRepository());
 
 /** 全局唯一的笔记用例 store。 */
 export const useNotesStore = createNotesStore(new HttpNoteRepository());
+
+/** 全局唯一的分类用例 store。 */
+export const useCategoriesStore = createCategoriesStore(new HttpCategoryRepository());

@@ -10,6 +10,7 @@
 //! - 应用层 `TaskService` 持有 `&self` 的 `Arc<dyn TaskRepository>`，方法签名需匹配
 //! - 事务仓储的内部实现通过 `UnsafeCell` 提供 `&mut Transaction`（内部可变性）
 
+use crate::domain::category::Category;
 use crate::domain::note::Note;
 use crate::domain::task::Task;
 use serde::{Deserialize, Serialize};
@@ -56,6 +57,10 @@ pub trait TaskRepository: Send + Sync {
     async fn update(&self, task: &Task) -> Result<bool, RepoError>;
     async fn delete(&self, id: &str) -> Result<bool, RepoError>;
     async fn search(&self, query: &TaskQuery) -> Result<TaskList, RepoError>;
+    /// 设置任务所属分类：`None` 表示清除归属，`Some(id)` 表示关联到该分类。
+    /// 仅改动 `category_id` 一列，不影响任务其它字段。
+    async fn assign_category(&self, task_id: &str, category_id: Option<String>)
+        -> Result<bool, RepoError>;
 }
 
 /// 笔记仓储端口。
@@ -66,4 +71,19 @@ pub trait NoteRepository: Send + Sync {
     async fn update(&self, note: &Note) -> Result<bool, RepoError>;
     async fn delete(&self, id: &str) -> Result<bool, RepoError>;
     async fn list_by_task(&self, task_id: &str) -> Result<Vec<Note>, RepoError>;
+}
+
+/// 分类仓储端口（独立聚合）。
+#[async_trait::async_trait]
+pub trait CategoryRepository: Send + Sync {
+    /// 列出全部分类（按创建时间升序）。
+    async fn list(&self) -> Result<Vec<Category>, RepoError>;
+    /// 按 ID 查询单个分类。
+    async fn find_by_id(&self, id: &str) -> Result<Option<Category>, RepoError>;
+    /// 持久化新分类。
+    async fn create(&self, category: &Category) -> Result<(), RepoError>;
+    /// 更新分类；返回是否有行被修改。
+    async fn update(&self, category: &Category) -> Result<bool, RepoError>;
+    /// 删除分类；返回是否有行被删除。
+    async fn delete(&self, id: &str) -> Result<bool, RepoError>;
 }

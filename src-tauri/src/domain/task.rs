@@ -20,6 +20,7 @@ pub struct Task {
     id: String,
     title: String,
     completed: bool,
+    category_id: Option<String>,
     created_at: String,
 }
 
@@ -27,6 +28,7 @@ impl Task {
     /// 构造一个新任务，就地校验标题不变量。
     ///
     /// 标题会先 `trim`，空白标题视为无效。生成 UUID 主键与 UTC 创建时间。
+    /// 新任务默认不归属任何分类（`category_id = None`）。
     pub fn new(title: &str) -> Result<Self, DomainError> {
         let title = title.trim();
         validate_title(title)?;
@@ -34,16 +36,24 @@ impl Task {
             id: Uuid::new_v4().to_string(),
             title: title.to_owned(),
             completed: false,
+            category_id: None,
             created_at: time::utc_now_rfc3339(),
         })
     }
 
     /// 从持久化原始数据重建实体（仅供仓储适配器使用，跳过校验）。
-    pub fn rebuild(id: String, title: String, completed: bool, created_at: String) -> Self {
+    pub fn rebuild(
+        id: String,
+        title: String,
+        completed: bool,
+        category_id: Option<String>,
+        created_at: String,
+    ) -> Self {
         Self {
             id,
             title,
             completed,
+            category_id,
             created_at,
         }
     }
@@ -80,6 +90,10 @@ impl Task {
 
     pub fn completed(&self) -> bool {
         self.completed
+    }
+
+    pub fn category_id(&self) -> Option<&str> {
+        self.category_id.as_deref()
     }
 
     pub fn created_at(&self) -> &str {

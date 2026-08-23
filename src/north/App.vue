@@ -19,6 +19,7 @@ const route = useRoute();
         :default-active="route.path"
       >
         <el-menu-item index="/tasks">任务管理</el-menu-item>
+        <el-menu-item index="/categories">分类管理</el-menu-item>
         <el-menu-item index="/about">关于</el-menu-item>
       </el-menu>
     </el-header>

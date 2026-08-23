@@ -121,6 +121,16 @@ impl TaskRepository for TxTaskRepository {
         let items = super::task_repo::list_tasks(&mut **tx, query).await?;
         Ok(TaskList { items, total })
     }
+
+    async fn assign_category(
+        &self,
+        task_id: &str,
+        category_id: Option<String>,
+    ) -> Result<bool, RepoError> {
+        let mut guard = self.shared.lock().await;
+        let tx = guard.as_mut().ok_or_else(tx_ended)?;
+        super::task_repo::assign_category(&mut **tx, task_id, category_id).await
+    }
 }
 
 /// 绑定到单个 SQLite 事务的笔记仓储（具体类型，无虚表）。

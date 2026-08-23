@@ -4,10 +4,11 @@
 //! 这样 UI / API / CLI 可自由替换，北向也能注入 mock 做测试。
 
 use crate::application::dto::{
-    CreateNoteDto, CreateTaskDto, CreateTaskWithNoteDto, UpdateNoteDto, UpdateTaskDto,
+    CreateCategoryDto, CreateNoteDto, CreateTaskDto, CreateTaskWithNoteDto, UpdateCategoryDto,
+    UpdateNoteDto, UpdateTaskDto,
 };
 use crate::application::error::ServiceError;
-use crate::domain::{Note, Task, TaskList, TaskQuery};
+use crate::domain::{Category, Note, Task, TaskList, TaskQuery};
 
 /// 北向端口：任务用例。
 #[async_trait::async_trait]
@@ -22,6 +23,12 @@ pub trait TaskUseCase: Send + Sync {
     async fn update(&self, id: &str, dto: UpdateTaskDto) -> Result<Task, ServiceError>;
     /// 删除任务。
     async fn delete(&self, id: &str) -> Result<(), ServiceError>;
+    /// 设置任务所属分类（`None` 清除归属）。
+    async fn set_category(
+        &self,
+        task_id: &str,
+        category_id: Option<String>,
+    ) -> Result<Task, ServiceError>;
 }
 
 /// 北向端口：笔记用例。
@@ -36,5 +43,20 @@ pub trait NoteUseCase: Send + Sync {
     /// 更新笔记。
     async fn update(&self, id: &str, dto: UpdateNoteDto) -> Result<Note, ServiceError>;
     /// 删除笔记。
+    async fn delete(&self, id: &str) -> Result<(), ServiceError>;
+}
+
+/// 北向端口：分类用例（独立聚合）。
+#[async_trait::async_trait]
+pub trait CategoryUseCase: Send + Sync {
+    /// 列出全部分类。
+    async fn list(&self) -> Result<Vec<Category>, ServiceError>;
+    /// 创建分类。
+    async fn create(&self, dto: CreateCategoryDto) -> Result<Category, ServiceError>;
+    /// 按 ID 查询单个分类。
+    async fn get(&self, id: &str) -> Result<Category, ServiceError>;
+    /// 更新分类。
+    async fn update(&self, id: &str, dto: UpdateCategoryDto) -> Result<Category, ServiceError>;
+    /// 删除分类。
     async fn delete(&self, id: &str) -> Result<(), ServiceError>;
 }

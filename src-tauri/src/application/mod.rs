@@ -4,16 +4,19 @@
 //! 与 SQL。`ports.rs` 定义北向端口（表现层依赖的接口），服务实现之；南向端口
 //! （仓储 trait）由领域层定义、基础设施层实现、此处注入。
 
+pub mod category_service;
 pub mod dto;
 pub mod error;
 pub mod note_service;
 pub mod ports;
 pub mod task_service;
 
+pub use category_service::CategoryService;
 pub use dto::{
-    CreateNoteDto, CreateTaskDto, CreateTaskWithNoteDto, UpdateNoteDto, UpdateTaskDto,
+    CreateCategoryDto, CreateNoteDto, CreateTaskDto, CreateTaskWithNoteDto, SetTaskCategoryDto,
+    UpdateCategoryDto, UpdateNoteDto, UpdateTaskDto,
 };
 pub use error::ServiceError;
 pub use note_service::NoteService;
-pub use ports::{NoteUseCase, TaskUseCase};
+pub use ports::{CategoryUseCase, NoteUseCase, TaskUseCase};
 pub use task_service::TaskService;

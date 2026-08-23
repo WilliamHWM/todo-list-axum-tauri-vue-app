@@ -12,6 +12,7 @@
 //! - 应用层直接编排事务内操作，不感知 SQL
 //! - `commit()` 提交；`Drop` 时自动 ROLLBACK
 
+pub mod category_repo;
 pub mod note_repo;
 pub mod task_repo;
 pub mod uow;

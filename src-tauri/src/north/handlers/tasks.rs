@@ -3,7 +3,7 @@
 use super::super::error::ApiError;
 use super::super::extract::JsonBody;
 use super::super::response::{ApiResponse, ApiResult};
-use crate::application::{CreateTaskDto, CreateTaskWithNoteDto, UpdateTaskDto};
+use crate::application::{CreateTaskDto, CreateTaskWithNoteDto, SetTaskCategoryDto, UpdateTaskDto};
 use crate::domain::{Task, TaskList, TaskQuery};
 use axum::{
     extract::{Path, Query, State},
@@ -68,4 +68,16 @@ pub async fn delete_task(
 ) -> Result<StatusCode, ApiError> {
     tasks.delete(&id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// PUT /api/tasks/:id/category
+///
+/// 设置任务所属分类；`categoryId` 为 `null` 时清除归属。
+pub async fn set_task_category(
+    State(tasks): State<Arc<dyn TaskUseCase>>,
+    Path(id): Path<String>,
+    Json(payload): Json<SetTaskCategoryDto>,
+) -> ApiResult<Task> {
+    let task = tasks.set_category(&id, payload.category_id).await?;
+    Ok(ApiResponse::ok(task))
 }

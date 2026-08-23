@@ -25,6 +25,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/health", get(handlers::health::health))
         .nest(&format!("{}/tasks", API_PREFIX), task_routes())
         .nest(&format!("{}/notes", API_PREFIX), note_routes())
+        .nest(&format!("{}/categories", API_PREFIX), category_routes())
         .with_state(state.clone()); // 传递状态
 
     // 2. 读取超时配置
@@ -49,6 +50,7 @@ fn task_routes() -> Router<AppState> {
         .route("/", get(handlers::tasks::list_tasks).post(handlers::tasks::create_task))
         .route("/with-note", post(handlers::tasks::create_task_with_note))
         .route("/:id", put(handlers::tasks::update_task).delete(handlers::tasks::delete_task))
+        .route("/:id/category", put(handlers::tasks::set_task_category))
         .route("/:id/notes", get(handlers::notes::list_notes_by_task))
 }
 
@@ -56,6 +58,17 @@ fn note_routes() -> Router<AppState> {
     Router::new()
         .route("/", post(handlers::notes::create_note))
         .route("/:id", get(handlers::notes::get_note).put(handlers::notes::update_note).delete(handlers::notes::delete_note))
+}
+
+fn category_routes() -> Router<AppState> {
+    Router::new()
+        .route("/", get(handlers::category_handlers::list_categories).post(handlers::category_handlers::create_category))
+        .route(
+            "/:id",
+            get(handlers::category_handlers::get_category)
+                .put(handlers::category_handlers::update_category)
+                .delete(handlers::category_handlers::delete_category),
+        )
 }
 
 

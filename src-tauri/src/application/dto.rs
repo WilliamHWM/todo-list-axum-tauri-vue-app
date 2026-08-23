@@ -51,3 +51,29 @@ pub struct CreateNoteDto {
 pub struct UpdateNoteDto {
     pub content: Option<String>,
 }
+
+/// 创建分类的输入。
+#[typeshare]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateCategoryDto {
+    pub name: String,
+    pub color: Option<String>,
+}
+
+/// 更新分类的输入（字段全部可选，但至少提供一个）。
+#[typeshare]
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCategoryDto {
+    pub name: Option<String>,
+    pub color: Option<String>,
+}
+
+/// 设置任务所属分类的输入（`null` 表示清除归属）。
+#[typeshare]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetTaskCategoryDto {
+    pub category_id: Option<String>,
+}

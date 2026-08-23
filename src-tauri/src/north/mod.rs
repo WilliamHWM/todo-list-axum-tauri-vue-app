@@ -11,7 +11,7 @@ pub mod routes;
 
 pub use routes::create_router;
 
-use crate::application::{NoteUseCase, TaskUseCase};
+use crate::application::{CategoryUseCase, NoteUseCase, TaskUseCase};
 use crate::shared::AppConfig;
 use axum::extract::FromRef;
 use std::sync::Arc;
@@ -28,6 +28,7 @@ use std::sync::Arc;
 pub struct AppState {
     pub tasks: Arc<dyn TaskUseCase>,
     pub notes: Arc<dyn NoteUseCase>,
+    pub categories: Arc<dyn CategoryUseCase>,
     pub config: AppConfig,
 }
 
@@ -43,11 +44,20 @@ impl FromRef<AppState> for Arc<dyn NoteUseCase> {
     }
 }
 
+impl FromRef<AppState> for Arc<dyn CategoryUseCase> {
+    fn from_ref(state: &AppState) -> Self {
+        state.categories.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::{CategoryService, CategoryUseCase, NoteService, NoteUseCase, TaskService, TaskUseCase};
     use crate::south::db::init_pool;
-    use crate::south::{SqlxNoteRepository, SqlxTaskRepository, SqlxTransactionManager};
+    use crate::south::{
+        SqlxCategoryRepository, SqlxNoteRepository, SqlxTaskRepository, SqlxTransactionManager,
+    };
     use axum::{
         body::{to_bytes, Body},
         http::{Request, StatusCode},
@@ -69,16 +79,18 @@ mod tests {
             db_max_connections: 5,
         };
         let pool = init_pool(&config).await.expect("init_pool failed");
-        let tasks: Arc<dyn TaskUseCase> = Arc::new(crate::application::TaskService::new(
-            Arc::new(SqlxTaskRepository::new(pool.clone())),
-            Arc::new(SqlxTransactionManager::new(pool.clone())),
-        ));
-        let notes: Arc<dyn NoteUseCase> = Arc::new(crate::application::NoteService::new(Arc::new(
-            SqlxNoteRepository::new(pool),
-        )));
+        let task_repo = Arc::new(SqlxTaskRepository::new(pool.clone()));
+        let note_repo = Arc::new(SqlxNoteRepository::new(pool.clone()));
+        let category_repo = Arc::new(SqlxCategoryRepository::new(pool.clone()));
+        let tx_manager = Arc::new(SqlxTransactionManager::new(pool.clone()));
+        let tasks: Arc<dyn TaskUseCase> =
+            Arc::new(TaskService::new(task_repo, tx_manager));
+        let notes: Arc<dyn NoteUseCase> = Arc::new(NoteService::new(note_repo));
+        let categories: Arc<dyn CategoryUseCase> = Arc::new(CategoryService::new(category_repo));
         AppState {
             tasks,
             notes,
+            categories,
             config,
         }
     }
@@ -96,6 +108,15 @@ mod tests {
     fn post_json(uri: &str, body: &str) -> Request<Body> {
         Request::builder()
             .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_owned()))
+            .unwrap()
+    }
+
+    fn put_json(uri: &str, body: &str) -> Request<Body> {
+        Request::builder()
+            .method("PUT")
             .uri(uri)
             .header("content-type", "application/json")
             .body(Body::from(body.to_owned()))
@@ -222,5 +243,55 @@ mod tests {
         let (status, body) = json_response(app, get("/api/tasks")).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["data"]["total"], 0, "回滚后不应残留孤儿任务");
+    }
+
+    #[tokio::test]
+    async fn categories_crud_and_assign_to_task() {
+        let app = create_router(test_state().await);
+
+        // 创建分类
+        let (status, body) = json_response(
+            app.clone(),
+            post_json("/api/categories", r##"{"name":"工作","color":"#ff0000"}"##),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["name"], "工作");
+        let cat_id = body["data"]["id"].as_str().unwrap().to_string();
+
+        // 列出分类
+        let (status, body) = json_response(app.clone(), get("/api/categories")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"].as_array().unwrap().len(), 1);
+
+        // 创建任务并归属到该分类
+        let (_, body) = json_response(
+            app.clone(),
+            post_json("/api/tasks", r#"{"title":"写季度报告"}"#),
+        )
+        .await;
+        let task_id = body["data"]["id"].as_str().unwrap().to_string();
+        let (status, body) = json_response(
+            app.clone(),
+            put_json(
+                &format!("/api/tasks/{task_id}/category"),
+                &format!(r#"{{"categoryId":"{cat_id}"}}"#),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["categoryId"], cat_id);
+
+        // 删除分类应成功，且任务因外键 SET NULL 仍健在（分类置空）
+        let request = Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/categories/{cat_id}"))
+            .body(Body::empty())
+            .unwrap();
+        let (status, _) = json_response(app.clone(), request).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, body) = json_response(app, get("/api/categories")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"].as_array().unwrap().len(), 0);
     }
 }

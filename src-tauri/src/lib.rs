@@ -127,16 +127,20 @@ fn build_app_state(
 ) -> north::AppState {
     let task_repo = Arc::new(south::SqlxTaskRepository::new(pool.clone()));
     let note_repo = Arc::new(south::SqlxNoteRepository::new(pool.clone()));
+    let category_repo = Arc::new(south::SqlxCategoryRepository::new(pool.clone()));
     let tx_manager = Arc::new(south::SqlxTransactionManager::new(pool));
 
     let tasks: Arc<dyn application::TaskUseCase> =
         Arc::new(application::TaskService::new(task_repo, tx_manager));
     let notes: Arc<dyn application::NoteUseCase> =
         Arc::new(application::NoteService::new(note_repo));
+    let categories: Arc<dyn application::CategoryUseCase> =
+        Arc::new(application::CategoryService::new(category_repo));
 
     north::AppState {
         tasks,
         notes,
+        categories,
         config,
     }
 }

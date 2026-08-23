@@ -196,6 +196,22 @@ export function createTasksStore(repo: TaskRepository) {
       }
     }
 
+    /** 设置任务所属分类：本地先改，失败回滚。 */
+    async function setCategory(task: Task, categoryId: string | null): Promise<void> {
+      const idx = tasks.value.findIndex((t) => t.id === task.id);
+      const prev = idx !== -1 ? tasks.value[idx] : null;
+      if (idx !== -1) {
+        tasks.value.splice(idx, 1, { ...prev!, categoryId: categoryId ?? undefined } as Task); // 乐观
+      }
+      try {
+        const updated = await repo.assignCategory(task.id, categoryId);
+        if (idx !== -1) tasks.value.splice(idx, 1, updated);
+      } catch (err) {
+        if (prev && idx !== -1) tasks.value.splice(idx, 1, prev); // 回滚
+        ElMessage.error((err as Error).message);
+      }
+    }
+
     return {
       tasks,
       total,
@@ -218,6 +234,7 @@ export function createTasksStore(repo: TaskRepository) {
       startEdit,
       cancelEdit,
       saveEdit,
+      setCategory,
       removeTask,
     };
   });
