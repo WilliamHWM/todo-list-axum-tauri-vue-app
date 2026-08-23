@@ -3,7 +3,6 @@
 use super::super::error::ApiError;
 use super::super::extract::JsonBody;
 use super::super::response::{ApiResponse, ApiResult};
-use super::super::AppState;
 use crate::application::{CreateTaskDto, CreateTaskWithNoteDto, UpdateTaskDto};
 use crate::domain::{Task, TaskList, TaskQuery};
 use axum::{
@@ -11,15 +10,18 @@ use axum::{
     http::StatusCode,
     Json,
 };
+use std::sync::Arc;
+
+use crate::application::TaskUseCase;
 
 /// GET /api/tasks
 ///
 /// 按关键字/完成状态过滤，支持排序与分页。
 pub async fn list_tasks(
-    State(state): State<AppState>,
+    State(tasks): State<Arc<dyn TaskUseCase>>,
     Query(query): Query<TaskQuery>,
 ) -> ApiResult<TaskList> {
-    let result = state.tasks.list(query).await?;
+    let result = tasks.list(query).await?;
     Ok(ApiResponse::ok(result))
 }
 
@@ -27,10 +29,10 @@ pub async fn list_tasks(
 ///
 /// 创建任务；标题不变量由领域实体校验。
 pub async fn create_task(
-    State(state): State<AppState>,
+    State(tasks): State<Arc<dyn TaskUseCase>>,
     JsonBody(payload): JsonBody<CreateTaskDto>,
 ) -> ApiResult<Task> {
-    let task = state.tasks.create(payload).await?;
+    let task = tasks.create(payload).await?;
     Ok(ApiResponse::ok(task))
 }
 
@@ -38,10 +40,10 @@ pub async fn create_task(
 ///
 /// 在同一数据库事务里创建任务并附带首条笔记：任务或笔记任一步失败都会整体回滚。
 pub async fn create_task_with_note(
-    State(state): State<AppState>,
+    State(tasks): State<Arc<dyn TaskUseCase>>,
     JsonBody(payload): JsonBody<CreateTaskWithNoteDto>,
 ) -> ApiResult<Task> {
-    let task = state.tasks.create_task_with_note(payload).await?;
+    let task = tasks.create_task_with_note(payload).await?;
     Ok(ApiResponse::ok(task))
 }
 
@@ -49,11 +51,11 @@ pub async fn create_task_with_note(
 ///
 /// 部分更新；至少提供一个字段，不变量由领域实体校验。
 pub async fn update_task(
-    State(state): State<AppState>,
+    State(tasks): State<Arc<dyn TaskUseCase>>,
     Path(id): Path<String>,
     Json(payload): Json<UpdateTaskDto>,
 ) -> ApiResult<Task> {
-    let task = state.tasks.update(&id, payload).await?;
+    let task = tasks.update(&id, payload).await?;
     Ok(ApiResponse::ok(task))
 }
 
@@ -61,9 +63,9 @@ pub async fn update_task(
 ///
 /// 成功返回 204；任务不存在返回 404。
 pub async fn delete_task(
-    State(state): State<AppState>,
+    State(tasks): State<Arc<dyn TaskUseCase>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    state.tasks.delete(&id).await?;
+    tasks.delete(&id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

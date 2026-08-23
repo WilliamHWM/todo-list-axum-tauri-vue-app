@@ -52,19 +52,8 @@ pub async fn run() {
     // 在此阶段就能暴露，而不是等到首个 HTTP 请求超时。
     pool.acquire().await.expect("database pool warmup failed");
 
-    // --- 装配：南向适配器 → 用例服务（北向端口实现）→ 北向网关状态 -----------------
-    let task_repo = Arc::new(south::SqlxTaskRepository::new(pool.clone()));
-    let note_repo = Arc::new(south::SqlxNoteRepository::new(pool.clone()));
-    let tx_manager = Arc::new(south::SqlxTransactionManager::new(pool));
-    let tasks: Arc<dyn application::TaskUseCase> =
-        Arc::new(application::TaskService::new(task_repo, tx_manager));
-    let notes: Arc<dyn application::NoteUseCase> =
-        Arc::new(application::NoteService::new(note_repo));
-    let state = north::AppState {
-        tasks,
-        notes,
-        config: config.clone(),
-    };
+    // --- 装配：组合根在此把南向适配器注入用例服务，产出北向网关状态 ----------------
+    let state = build_app_state(pool, config.clone());
 
     // --- API 服务器（北向网关）-------------------------------------------------
     // Axum 与 Tauri 在同一进程内运行，生命周期绑定；Tauri 退出时进程终止，
@@ -124,4 +113,30 @@ fn init_tracing(config: &shared::AppConfig) {
 #[tauri::command]
 fn get_api_port(state: tauri::State<'_, u16>) -> u16 {
     *state
+}
+
+/// 组合根：把连接池装配成北向网关所需的全部服务。
+///
+/// 每个南向适配器（`SqlxTaskRepository` / `SqlxNoteRepository` /
+/// `SqlxTransactionManager`）各自持有一个 `Pool` 句柄——`SqlitePool` 内部即 `Arc`，
+/// 这里的 `clone` 只是原子计数 +1，开销可忽略，且三个适配器必须各持一份，无法再少。
+/// 把这段"知道所有具体类型"的装配收口到本函数，使 `run()` 只做流程编排。
+fn build_app_state(
+    pool: south::db::Pool,
+    config: shared::AppConfig,
+) -> north::AppState {
+    let task_repo = Arc::new(south::SqlxTaskRepository::new(pool.clone()));
+    let note_repo = Arc::new(south::SqlxNoteRepository::new(pool.clone()));
+    let tx_manager = Arc::new(south::SqlxTransactionManager::new(pool));
+
+    let tasks: Arc<dyn application::TaskUseCase> =
+        Arc::new(application::TaskService::new(task_repo, tx_manager));
+    let notes: Arc<dyn application::NoteUseCase> =
+        Arc::new(application::NoteService::new(note_repo));
+
+    north::AppState {
+        tasks,
+        notes,
+        config,
+    }
 }

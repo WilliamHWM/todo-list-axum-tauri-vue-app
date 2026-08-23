@@ -13,17 +13,34 @@ pub use routes::create_router;
 
 use crate::application::{NoteUseCase, TaskUseCase};
 use crate::shared::AppConfig;
+use axum::extract::FromRef;
 use std::sync::Arc;
 
 /// Axum 路由共享状态：北向端口 + 跨层配置。
 ///
 /// 字段类型为 `Arc<dyn TaskUseCase>` / `Arc<dyn NoteUseCase>`，即北向网关只面向
 /// 应用层接口，具体服务实现由组合根注入，可替换、可 mock。
+///
+/// 通过 [`FromRef`] 把单个北向端口暴露给 handler：handler 直接 `State<Arc<dyn
+/// TaskUseCase>>` 提取自己需要的那一个端口，而非背负整个 `AppState`。新增 service
+/// 时旧 handler 无需改动。
 #[derive(Clone)]
 pub struct AppState {
     pub tasks: Arc<dyn TaskUseCase>,
     pub notes: Arc<dyn NoteUseCase>,
     pub config: AppConfig,
+}
+
+impl FromRef<AppState> for Arc<dyn TaskUseCase> {
+    fn from_ref(state: &AppState) -> Self {
+        state.tasks.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<dyn NoteUseCase> {
+    fn from_ref(state: &AppState) -> Self {
+        state.notes.clone()
+    }
 }
 
 #[cfg(test)]
