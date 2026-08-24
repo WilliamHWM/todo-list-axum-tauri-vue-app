@@ -1,16 +1,32 @@
 //! 分类处理器：CRUD。
+//!
+//! 路由与实现同文件共存（co-location）：[`router`] 声明本资源全部端点。
 
 use super::super::error::ApiError;
 use super::super::extract::JsonBody;
 use super::super::response::{ApiResponse, ApiResult};
+use super::super::AppState;
 use crate::application::{CategoryUseCase, CreateCategoryDto, UpdateCategoryDto};
 use crate::domain::Category;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    Json,
+    routing::get,
+    Json, Router,
 };
 use std::sync::Arc;
+
+/// 分类资源路由：`/api/categories` 前缀下的全部端点。
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route("/", get(list_categories).post(create_category))
+        .route(
+            "/:id",
+            get(get_category)
+                .put(update_category)
+                .delete(delete_category),
+        )
+}
 
 /// GET /api/categories
 ///

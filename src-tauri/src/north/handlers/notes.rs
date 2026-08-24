@@ -1,16 +1,31 @@
 //! 笔记处理器：CRUD + 按任务列出。
+//!
+//! 路由与实现同文件共存（co-location）：[`router`] 声明本资源全部端点；
+//! 「按任务列出」的 URL 在 `/api/tasks/:id/notes` 下，由 tasks 模块的路由挂载。
 
 use super::super::error::ApiError;
 use super::super::extract::JsonBody;
 use super::super::response::{ApiResponse, ApiResult};
+use super::super::AppState;
 use crate::application::{CreateNoteDto, NoteUseCase, UpdateNoteDto};
 use crate::domain::Note;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    Json,
+    routing::{get, post},
+    Json, Router,
 };
 use std::sync::Arc;
+
+/// 笔记资源路由：`/api/notes` 前缀下的全部端点。
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route("/", post(create_note))
+        .route(
+            "/:id",
+            get(get_note).put(update_note).delete(delete_note),
+        )
+}
 
 /// POST /api/notes
 ///

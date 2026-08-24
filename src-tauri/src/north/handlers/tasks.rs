@@ -1,18 +1,36 @@
 //! 任务处理器：CRUD + 过滤/分页查询。
+//!
+//! 路由与实现同文件共存（co-location）：[`router`] 声明本资源全部端点，
+//! 新增端点只改本文件，`routes.rs` 无需感知。
 
 use super::super::error::ApiError;
 use super::super::extract::JsonBody;
 use super::super::response::{ApiResponse, ApiResult};
+use super::super::AppState;
 use crate::application::{CreateTaskDto, CreateTaskWithNoteDto, SetTaskCategoryDto, UpdateTaskDto};
 use crate::domain::{Task, TaskList, TaskQuery};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    Json,
+    routing::{get, post, put},
+    Json, Router,
 };
 use std::sync::Arc;
 
 use crate::application::TaskUseCase;
+
+/// 任务资源路由：`/api/tasks` 前缀下的全部端点。
+///
+/// `/:id/notes` 是笔记资源的嵌套视图——URL 归属任务、实现归属笔记模块，
+/// 路由在此挂载。
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route("/", get(list_tasks).post(create_task))
+        .route("/with-note", post(create_task_with_note))
+        .route("/:id", put(update_task).delete(delete_task))
+        .route("/:id/category", put(set_task_category))
+        .route("/:id/notes", get(super::notes::list_notes_by_task))
+}
 
 /// GET /api/tasks
 ///

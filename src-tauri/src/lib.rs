@@ -53,12 +53,12 @@ pub async fn run() {
     pool.acquire().await.expect("database pool warmup failed");
 
     // --- 装配：组合根在此把南向适配器注入用例服务，产出北向网关状态 ----------------
-    let state = build_app_state(pool, config.clone());
+    let state = build_app_state(pool);
 
     // --- API 服务器（北向网关）-------------------------------------------------
     // Axum 与 Tauri 在同一进程内运行，生命周期绑定；Tauri 退出时进程终止，
     // Axum 服务随之结束，无需单独的 abort。
-    let app = north::create_router(state);
+    let app = north::create_router(state, &config);
     let listener = TcpListener::bind((config.host.as_str(), config.port))
         .await
         .unwrap_or_else(|e| panic!("failed to bind local API port: {e}"));
@@ -119,12 +119,10 @@ fn get_api_port(state: tauri::State<'_, u16>) -> u16 {
 ///
 /// 每个南向适配器（`SqlxTaskRepository` / `SqlxNoteRepository` /
 /// `SqlxTransactionManager`）各自持有一个 `Pool` 句柄——`SqlitePool` 内部即 `Arc`，
-/// 这里的 `clone` 只是原子计数 +1，开销可忽略，且三个适配器必须各持一份，无法再少。
+/// 这里的 `clone` 只是原子计数 +1，开销可忽略，且各适配器必须各持一份，无法再少。
 /// 把这段"知道所有具体类型"的装配收口到本函数，使 `run()` 只做流程编排。
-fn build_app_state(
-    pool: south::db::Pool,
-    config: shared::AppConfig,
-) -> north::AppState {
+/// 配置不进入 `AppState`：`create_router(state, &config)` 在装配期单独消费。
+fn build_app_state(pool: south::db::Pool) -> north::AppState {
     let task_repo = Arc::new(south::SqlxTaskRepository::new(pool.clone()));
     let note_repo = Arc::new(south::SqlxNoteRepository::new(pool.clone()));
     let category_repo = Arc::new(south::SqlxCategoryRepository::new(pool.clone()));
@@ -141,6 +139,5 @@ fn build_app_state(
         tasks,
         notes,
         categories,
-        config,
     }
 }

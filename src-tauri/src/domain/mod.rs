@@ -18,4 +18,4 @@ pub use repository::{
     CategoryRepository, NoteRepository, RepoError, TaskList, TaskQuery, TaskRepository,
 };
 pub use task::Task;
-pub use uow::{TransactionContext, TransactionManager};
+pub use uow::{TransactionContext, TransactionManager, TxWork};

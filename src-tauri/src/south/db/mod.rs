@@ -6,18 +6,19 @@
 //!
 //! ## 事务架构
 //!
-//! `uow.rs` 实现了参考设计中的 Transaction Context 模式：
-//! - 具体类型 `SqlxTransactionContext` 持有共享事务和各仓储（无 `Box<dyn>`）
+//! `uow.rs` 实现了 Transaction Context 模式：
+//! - 具体类型 `SqlxTransactionContext` 独占拥有事务，仓储为借用上下文的临时视图（GAT，
+//!   无 `Box<dyn>`、无共享所有权）
 //! - `SqlxTransactionManager::begin()` 返回具体上下文（无虚表）
 //! - 应用层直接编排事务内操作，不感知 SQL
-//! - `commit()` 提交；`Drop` 时自动 ROLLBACK
+//! - `commit()` 提交；`Drop` 时自动 ROLLBACK；提交后误用仓储在编译期即不可能
 
 pub mod category_repo;
 pub mod note_repo;
 pub mod task_repo;
 pub mod uow;
 
-use crate::shared::{AppConfig, AppError};
+use  crate::shared::{AppConfig, AppError};
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
 };

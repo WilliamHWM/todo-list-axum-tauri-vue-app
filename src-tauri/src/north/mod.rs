@@ -12,48 +12,31 @@ pub mod routes;
 pub use routes::create_router;
 
 use crate::application::{CategoryUseCase, NoteUseCase, TaskUseCase};
-use crate::shared::AppConfig;
 use axum::extract::FromRef;
 use std::sync::Arc;
 
-/// Axum 路由共享状态：北向端口 + 跨层配置。
+/// Axum 路由共享状态：北向端口集合。
 ///
-/// 字段类型为 `Arc<dyn TaskUseCase>` / `Arc<dyn NoteUseCase>`，即北向网关只面向
-/// 应用层接口，具体服务实现由组合根注入，可替换、可 mock。
+/// 只装"请求处理真正依赖的东西"（各用例端口）；跨层配置不进状态——
+/// `create_router(state, &config)` 在装配期消费配置，请求路径上无感知。
 ///
-/// 通过 [`FromRef`] 把单个北向端口暴露给 handler：handler 直接 `State<Arc<dyn
-/// TaskUseCase>>` 提取自己需要的那一个端口，而非背负整个 `AppState`。新增 service
-/// 时旧 handler 无需改动。
-#[derive(Clone)]
+/// `#[derive(FromRef)]` 为每个字段自动生成 `FromRef` 实现：handler 直接
+/// `State<Arc<dyn TaskUseCase>>` 提取自己需要的那一个端口，而非背负整个
+/// `AppState`。新增 service = 加一个字段，旧 handler 无需改动。
+#[derive(Clone, FromRef)]
 pub struct AppState {
     pub tasks: Arc<dyn TaskUseCase>,
     pub notes: Arc<dyn NoteUseCase>,
     pub categories: Arc<dyn CategoryUseCase>,
-    pub config: AppConfig,
-}
-
-impl FromRef<AppState> for Arc<dyn TaskUseCase> {
-    fn from_ref(state: &AppState) -> Self {
-        state.tasks.clone()
-    }
-}
-
-impl FromRef<AppState> for Arc<dyn NoteUseCase> {
-    fn from_ref(state: &AppState) -> Self {
-        state.notes.clone()
-    }
-}
-
-impl FromRef<AppState> for Arc<dyn CategoryUseCase> {
-    fn from_ref(state: &AppState) -> Self {
-        state.categories.clone()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::{CategoryService, CategoryUseCase, NoteService, NoteUseCase, TaskService, TaskUseCase};
+    use crate::application::{
+        CategoryService, CategoryUseCase, NoteService, NoteUseCase, TaskService, TaskUseCase,
+    };
+    use crate::shared::AppConfig;
     use crate::south::db::init_pool;
     use crate::south::{
         SqlxCategoryRepository, SqlxNoteRepository, SqlxTaskRepository, SqlxTransactionManager,
@@ -66,8 +49,9 @@ mod tests {
     use tower::ServiceExt;
     use uuid::Uuid;
 
-    /// 用唯一临时库构建测试状态：真实 sqlx 仓储 + 应用层服务（经北向端口注入）。
-    async fn test_state() -> AppState {
+    /// 用唯一临时库构建测试路由：真实 sqlx 仓储 + 应用层服务（经北向端口注入），
+    /// 配置在装配期传给 `create_router`，不进入 `AppState`。
+    async fn test_app() -> axum::Router {
         let db_path = std::env::temp_dir().join(format!("axum_api_test_{}.db", Uuid::new_v4()));
         let config = AppConfig {
             database_url: format!("sqlite:{}?mode=rwc", db_path.display()),
@@ -83,16 +67,10 @@ mod tests {
         let note_repo = Arc::new(SqlxNoteRepository::new(pool.clone()));
         let category_repo = Arc::new(SqlxCategoryRepository::new(pool.clone()));
         let tx_manager = Arc::new(SqlxTransactionManager::new(pool.clone()));
-        let tasks: Arc<dyn TaskUseCase> =
-            Arc::new(TaskService::new(task_repo, tx_manager));
+        let tasks: Arc<dyn TaskUseCase> = Arc::new(TaskService::new(task_repo, tx_manager));
         let notes: Arc<dyn NoteUseCase> = Arc::new(NoteService::new(note_repo));
         let categories: Arc<dyn CategoryUseCase> = Arc::new(CategoryService::new(category_repo));
-        AppState {
-            tasks,
-            notes,
-            categories,
-            config,
-        }
+        create_router(AppState { tasks, notes, categories }, &config)
     }
 
     async fn json_response(app: axum::Router, request: Request<Body>) -> (StatusCode, Value) {
@@ -124,12 +102,16 @@ mod tests {
     }
 
     fn get(uri: &str) -> Request<Body> {
-        Request::builder().method("GET").uri(uri).body(Body::empty()).unwrap()
+        Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
     }
 
     #[tokio::test]
     async fn health_returns_ok_envelope() {
-        let app = create_router(test_state().await);
+        let app = test_app().await;
         let (status, body) = json_response(app, get("/api/health")).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["code"], 0);
@@ -139,7 +121,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_task_returns_task_with_utc_timestamp() {
-        let app = create_router(test_state().await);
+        let app = test_app().await;
         let (status, body) =
             json_response(app, post_json("/api/tasks", r#"{"title":"写测试"}"#)).await;
         assert_eq!(status, StatusCode::OK);
@@ -153,7 +135,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_task_rejects_blank_title() {
-        let app = create_router(test_state().await);
+        let app = test_app().await;
         let (status, body) =
             json_response(app, post_json("/api/tasks", r#"{"title":"   "}"#)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -164,21 +146,21 @@ mod tests {
     async fn create_task_rejects_title_too_long() {
         let long = "x".repeat(121);
         let body = format!(r#"{{"title":"{long}"}}"#);
-        let app = create_router(test_state().await);
+        let app = test_app().await;
         let (status, _) = json_response(app, post_json("/api/tasks", &body)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
     async fn create_task_rejects_missing_title() {
-        let app = create_router(test_state().await);
+        let app = test_app().await;
         let (status, _) = json_response(app, post_json("/api/tasks", "{}")).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
     async fn list_tasks_paginates() {
-        let app = create_router(test_state().await);
+        let app = test_app().await;
         for i in 0..3 {
             json_response(
                 app.clone(),
@@ -194,7 +176,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_missing_task_returns_404() {
-        let app = create_router(test_state().await);
+        let app = test_app().await;
         let request = Request::builder()
             .method("DELETE")
             .uri("/api/tasks/not-exist")
@@ -206,7 +188,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_task_with_note_commits_atomically() {
-        let app = create_router(test_state().await);
+        let app = test_app().await;
         let (status, body) = json_response(
             app.clone(),
             post_json(
@@ -228,7 +210,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_task_with_note_rolls_back_on_invalid_content() {
-        let app = create_router(test_state().await);
+        let app = test_app().await;
         let (status, _) = json_response(
             app.clone(),
             post_json(
@@ -247,7 +229,7 @@ mod tests {
 
     #[tokio::test]
     async fn categories_crud_and_assign_to_task() {
-        let app = create_router(test_state().await);
+        let app = test_app().await;
 
         // 创建分类
         let (status, body) = json_response(

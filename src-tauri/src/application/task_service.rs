@@ -7,19 +7,21 @@
 //! ## 事务处理
 //!
 //! 跨仓储的原子用例（如 [`TaskService::create_task_with_note`]）通过注入的
-//! [`TransactionManager`]（领域南向端口）开启事务，应用层不感知任何 sqlx 类型。所有
-//! 写路径统一走 [`TransactionManager::with_tx`]，把"必提交 / 必回滚"收敛到一处：
+//! [`TransactionManager`](crate::domain::TransactionManager)（领域南向端口）开启
+//! 事务，应用层不感知任何 sqlx 类型。所有写路径统一走 `with_tx`，把"必提交 /
+//! 必回滚"收敛到一处：
 //!
-//! - `with_tx` 内部 `begin()` 返回绑定事务的 [`TransactionContext`]（具体类型，无装箱）
-//! - 事务内通过 `ctx.tasks()` / `ctx.notes()` 获取仓储执行写入
+//! - 原子步骤封装为 [`TxWork`] 工作单元（command object）：字段即输入实体，
+//!   `run` 即事务内步骤，`Output` 即产出
+//! - 事务内通过 `ctx.tasks()` / `ctx.notes()` 获取借用上下文的仓储执行写入
 //! - 成功自动 `COMMIT`；任一步出错 → 上下文 drop → 自动 ROLLBACK，杜绝漏提交/漏回滚
 
 use crate::application::error::ServiceError;
 use crate::application::ports::TaskUseCase;
 use crate::application::{CreateTaskDto, CreateTaskWithNoteDto, UpdateTaskDto};
 use crate::domain::{
-    DomainError, Note, Task, TaskList, TaskQuery, TaskRepository, NoteRepository,
-    TransactionContext, TransactionManager,
+    DomainError, Note, RepoError, Task, TaskList, TaskQuery, TaskRepository, NoteRepository,
+    TransactionContext, TransactionManager, TxWork,
 };
 use std::sync::Arc;
 
@@ -31,6 +33,26 @@ use std::sync::Arc;
 pub struct TaskService<M: TransactionManager> {
     repo: Arc<dyn TaskRepository>,
     tx_manager: Arc<M>,
+}
+
+/// 「创建任务并写首条笔记」的事务工作单元。
+///
+/// 字段即输入（两个已通过领域校验的实体）；`run` 即事务内步骤：两步插入，
+/// 任一步失败整体回滚。产出为新创建的任务快照，供调用方返回给客户端。
+struct CreateTaskWithNoteWork {
+    task: Task,
+    note: Note,
+}
+
+#[async_trait::async_trait]
+impl<C: TransactionContext + Send> TxWork<C> for CreateTaskWithNoteWork {
+    type Output = Task;
+
+    async fn run(&mut self, ctx: &mut C) -> Result<Task, RepoError> {
+        ctx.tasks().insert(&self.task).await?;
+        ctx.notes().insert(&self.note).await?;
+        Ok(self.task.clone())
+    }
 }
 
 impl<M: TransactionManager> TaskService<M> {
@@ -55,9 +77,9 @@ impl<M: TransactionManager> TaskUseCase for TaskService<M> {
 
     /// 原子创建任务并附带首条笔记（同一事务，要么都成功要么都回滚）。
     ///
-    /// 事务通过 [`TransactionManager::with_tx`] 收敛：成功自动 COMMIT，任何错误
-    /// 自动 ROLLBACK。实体先在校验阶段构造——校验失败（如标题为空）直接返回领域错误，
-    /// 不会无谓开启事务。
+    /// 事务通过 `with_tx` 收敛：实体先在校验阶段构造——校验失败（如标题为空）直接
+    /// 返回领域错误，不会无谓开启事务；随后把两个实体交给 [`CreateTaskWithNoteWork`]
+    /// 工作单元在单事务内落库，成功自动 COMMIT，任何错误自动 ROLLBACK。
     async fn create_task_with_note(
         &self,
         dto: CreateTaskWithNoteDto,
@@ -66,13 +88,7 @@ impl<M: TransactionManager> TaskUseCase for TaskService<M> {
         let note = Note::new(Some(task.id().to_owned()), &dto.content)?;
         let created = self
             .tx_manager
-            .with_tx(move |ctx| {
-                Box::pin(async move {
-                    ctx.tasks().insert(&task).await?;
-                    ctx.notes().insert(&note).await?;
-                    Ok(task)
-                })
-            })
+            .with_tx(CreateTaskWithNoteWork { task, note })
             .await?;
         Ok(created)
     }
