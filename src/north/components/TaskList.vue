@@ -4,6 +4,7 @@ import { Search } from "@element-plus/icons-vue";
 import { useTasksStore, useNotesStore } from "@/shared/di";
 import { formatDateTime } from "@/shared/format";
 import NotesPanel from "@/north/components/NotesPanel.vue";
+import TaskAgentRuns from "@/north/components/TaskAgentRuns.vue";
 import CategorySelect from "@/north/components/CategorySelect.vue";
 import type { Task, TaskFilter } from "@/domain/task";
 
@@ -19,8 +20,21 @@ const drawerVisible = computed({
   },
 });
 
+// 智能体执行抽屉：与笔记抽屉并列，互不干扰（一次只看一个任务的某一类详情）。
+const agentTask = ref<Task | null>(null);
+const agentVisible = computed({
+  get: () => agentTask.value !== null,
+  set: (visible: boolean) => {
+    if (!visible) agentTask.value = null;
+  },
+});
+
 function openNotes(task: Task): void {
   drawerTask.value = task;
+}
+
+function openAgent(task: Task): void {
+  agentTask.value = task;
 }
 
 async function handleRemove(task: Task): Promise<void> {
@@ -127,15 +141,18 @@ onMounted(() => store.loadTasks());
             </el-button>
             <el-button size="small" @click="store.cancelEdit()">取消</el-button>
           </template>
-          <template v-else>
-            <el-button size="small" text type="primary" @click="openNotes(row)">
-               笔记
+           <template v-else>
+             <el-button size="small" text type="primary" @click="openNotes(row)">
+                笔记
+             </el-button>
+             <el-button size="small" text type="success" @click="openAgent(row)">
+               智能体
              </el-button>
              <el-button size="small" text @click="store.startEdit(row)">编辑</el-button>
              <el-button size="small" text type="danger" @click="handleRemove(row)">
                删除
              </el-button>
-          </template>
+           </template>
         </template>
       </el-table-column>
     </el-table>
@@ -159,6 +176,14 @@ onMounted(() => store.loadTasks());
     size="400px"
   >
     <NotesPanel v-if="drawerTask" :task-id="drawerTask.id" />
+  </el-drawer>
+
+  <el-drawer
+    v-model="agentVisible"
+    :title="agentTask ? `智能体执行 · ${agentTask.title}` : '智能体执行'"
+    size="600px"
+  >
+    <TaskAgentRuns v-if="agentTask" :task-id="agentTask.id" :requirement="agentTask.title" />
   </el-drawer>
 </template>
 

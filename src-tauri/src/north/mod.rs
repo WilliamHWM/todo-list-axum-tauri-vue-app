@@ -11,6 +11,7 @@ pub mod routes;
 
 pub use routes::create_router;
 
+use crate::agents::application::ports::AgentTeamUseCase;
 use crate::application::{CategoryUseCase, NoteUseCase, TaskUseCase};
 use axum::extract::FromRef;
 use std::sync::Arc;
@@ -28,14 +29,18 @@ pub struct AppState {
     pub tasks: Arc<dyn TaskUseCase>,
     pub notes: Arc<dyn NoteUseCase>,
     pub categories: Arc<dyn CategoryUseCase>,
+    pub agents: Arc<dyn AgentTeamUseCase>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::application::{
-        CategoryService, CategoryUseCase, NoteService, NoteUseCase, TaskService, TaskUseCase,
-    };
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::agents::application::ports::AgentTeamUseCase;
+        use crate::agents::application::service::AgentTeamService;
+        use crate::agents::south::llm::mock::MockLlm;
+        use crate::application::{
+            CategoryService, CategoryUseCase, NoteService, NoteUseCase, TaskService, TaskUseCase,
+        };
     use crate::shared::AppConfig;
     use crate::south::db::init_pool;
     use crate::south::{
@@ -66,11 +71,26 @@ mod tests {
         let task_repo = Arc::new(SqlxTaskRepository::new(pool.clone()));
         let note_repo = Arc::new(SqlxNoteRepository::new(pool.clone()));
         let category_repo = Arc::new(SqlxCategoryRepository::new(pool.clone()));
+        let agent_run_repo = Arc::new(
+            crate::agents::south::agent_run_repository::SqlxAgentRunRepository::new(pool.clone()),
+        );
         let tx_manager = Arc::new(SqlxTransactionManager::new(pool.clone()));
         let tasks: Arc<dyn TaskUseCase> = Arc::new(TaskService::new(task_repo, tx_manager));
         let notes: Arc<dyn NoteUseCase> = Arc::new(NoteService::new(note_repo));
         let categories: Arc<dyn CategoryUseCase> = Arc::new(CategoryService::new(category_repo));
-        create_router(AppState { tasks, notes, categories }, &config)
+        let agents: Arc<dyn AgentTeamUseCase> = Arc::new(AgentTeamService::new(
+            Arc::new(MockLlm::default()),
+            agent_run_repo,
+        ));
+        create_router(
+            AppState {
+                tasks,
+                notes,
+                categories,
+                agents,
+            },
+            &config,
+        )
     }
 
     async fn json_response(app: axum::Router, request: Request<Body>) -> (StatusCode, Value) {
@@ -275,5 +295,72 @@ mod tests {
         let (status, body) = json_response(app, get("/api/categories")).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["data"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn agent_run_persists_for_task() {
+        let app = test_app().await;
+
+        // 先建一个任务，作为智能体工作的载体。
+        let (status, body) =
+            json_response(app.clone(), post_json("/api/tasks", r#"{"title":"用智能体实现登录"}"#))
+                .await;
+        assert_eq!(status, StatusCode::OK);
+        let task_id = body["data"]["id"].as_str().unwrap().to_string();
+
+        // 让智能体团队针对该任务协作，并持久化运行记录。
+        let (status, body) = json_response(
+            app.clone(),
+            post_json(
+                &format!("/api/tasks/{task_id}/agent-run"),
+                r#"{"requirement":"实现登录模块"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["approved"], true);
+        assert!(!body["data"]["id"].as_str().unwrap().is_empty());
+
+        // 再跑一次，验证一个任务可有多条运行记录。
+        let (status, _) = json_response(
+            app.clone(),
+            post_json(
+                &format!("/api/tasks/{task_id}/agent-run"),
+                r#"{"requirement":"实现登录模块（含验证码）"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // 按任务列出运行记录，应能回溯到两条。
+        let (status, body) =
+            json_response(app.clone(), get(&format!("/api/tasks/{task_id}/agent-runs"))).await;
+        assert_eq!(status, StatusCode::OK);
+        let runs = body["data"].as_array().unwrap();
+        assert_eq!(runs.len(), 2, "一个任务应关联两条智能体运行记录");
+        assert_eq!(runs[0]["requirement"], "实现登录模块（含验证码）");
+    }
+
+    #[tokio::test]
+    async fn agent_run_stream_emits_events() {
+        let app = test_app().await;
+        let (_, body) =
+            json_response(app.clone(), post_json("/api/tasks", r#"{"title":"流式任务"}"#)).await;
+        let task_id = body["data"]["id"].as_str().unwrap().to_string();
+
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/api/tasks/{task_id}/agent-run/stream"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"requirement":"流式协作"}"#))
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("\"type\":\"status\""), "应包含状态事件");
+        assert!(text.contains("\"type\":\"artifact\""), "应包含产物事件");
+        assert!(text.contains("\"type\":\"done\""), "应以 done 事件结束");
+        assert!(text.contains("\"approved\":true"), "默认用 Mock 应通过评审");
     }
 }

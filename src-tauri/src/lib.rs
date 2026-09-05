@@ -17,6 +17,7 @@
 //! 5. 绑定 Axum 到随机回环端口，后台任务托管 HTTP 服务（north）。
 //! 6. 交给 Tauri 事件循环；端口存入 Tauri 状态，前端通过 `get_api_port` 发现。
 
+mod agents;
 mod application;
 mod domain;
 mod north;
@@ -122,10 +123,17 @@ fn get_api_port(state: tauri::State<'_, u16>) -> u16 {
 /// 这里的 `clone` 只是原子计数 +1，开销可忽略，且各适配器必须各持一份，无法再少。
 /// 把这段"知道所有具体类型"的装配收口到本函数，使 `run()` 只做流程编排。
 /// 配置不进入 `AppState`：`create_router(state, &config)` 在装配期单独消费。
+///
+/// 多 Agent 协作子系统同样在此装配：根据 `AGENT_LLM` 选择 LLM 适配器（默认 Mock），
+/// 注入到 `AgentTeamService`，再挂入 `AppState`。
 fn build_app_state(pool: south::db::Pool) -> north::AppState {
     let task_repo = Arc::new(south::SqlxTaskRepository::new(pool.clone()));
     let note_repo = Arc::new(south::SqlxNoteRepository::new(pool.clone()));
     let category_repo = Arc::new(south::SqlxCategoryRepository::new(pool.clone()));
+    // 智能体运行记录仓储：与任务共用同一连接池（同库 `agent_runs` 表）。
+    let agent_run_repo = Arc::new(agents::south::agent_run_repository::SqlxAgentRunRepository::new(
+        pool.clone(),
+    ));
     let tx_manager = Arc::new(south::SqlxTransactionManager::new(pool));
 
     let tasks: Arc<dyn application::TaskUseCase> =
@@ -135,9 +143,25 @@ fn build_app_state(pool: south::db::Pool) -> north::AppState {
     let categories: Arc<dyn application::CategoryUseCase> =
         Arc::new(application::CategoryService::new(category_repo));
 
+    // --- 多 Agent 协作子系统：选择 LLM 适配器并装配服务 ---------------------
+    let agent_llm: Arc<dyn agents::application::ports::Llm> =
+        if std::env::var("AGENT_LLM").as_deref() == Ok("openai") {
+            tracing::info!("AGENT_LLM=openai，使用 OpenAI 适配器");
+            Arc::new(agents::south::llm::openai::OpenAiLlm::from_env())
+        } else {
+            tracing::info!("使用 Mock LLM 适配器（无需密钥即可演示多 Agent 协作）");
+            Arc::new(agents::south::llm::mock::MockLlm::default())
+        };
+    let agents: Arc<dyn agents::application::ports::AgentTeamUseCase> =
+        Arc::new(agents::application::service::AgentTeamService::new(
+            agent_llm,
+            agent_run_repo,
+        ));
+
     north::AppState {
         tasks,
         notes,
         categories,
+        agents,
     }
 }

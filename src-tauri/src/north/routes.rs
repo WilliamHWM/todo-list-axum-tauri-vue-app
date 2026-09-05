@@ -24,7 +24,8 @@ pub fn create_router(state: AppState, config: &AppConfig) -> Router {
         .nest("/health", handlers::health::router())
         .nest("/tasks", handlers::tasks::router())
         .nest("/notes", handlers::notes::router())
-        .nest("/categories", handlers::category_handlers::router());
+        .nest("/categories", handlers::category_handlers::router())
+        .nest("/agents", crate::agents::north::handlers::router());
     let app = Router::new().nest(API_PREFIX, api).with_state(state);
 
     // 2. 叠加全局中间件（注意顺序：后添加的层在外层）

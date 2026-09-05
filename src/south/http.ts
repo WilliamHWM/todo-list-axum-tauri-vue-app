@@ -39,7 +39,7 @@ interface ErrorEnvelope {
 
 let apiBaseUrlPromise: Promise<string> | undefined;
 
-function getApiBaseUrl(): Promise<string> {
+export function getApiBaseUrl(): Promise<string> {
   apiBaseUrlPromise ??= invoke<number>("get_api_port").then(
     (port) => `http://127.0.0.1:${port}/api`,
   );

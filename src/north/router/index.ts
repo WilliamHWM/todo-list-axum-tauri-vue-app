@@ -23,6 +23,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: "分类管理" },
   },
   {
+    path: "/agent-team",
+    name: "agentTeam",
+    component: () => import("@/north/views/AgentTeamView.vue"),
+    meta: { title: "智能体团队" },
+  },
+  {
     path: "/about",
     name: "about",
     component: () => import("@/north/views/AboutView.vue"),

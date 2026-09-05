@@ -9,9 +9,11 @@
 import { HttpTaskRepository } from "@/south/task-repository";
 import { HttpNoteRepository } from "@/south/note-repository";
 import { HttpCategoryRepository } from "@/south/category-repository";
+import { HttpAgentTeamRepository } from "@/south/agent-team-repository";
 import { createTasksStore } from "@/application/tasks";
 import { createNotesStore } from "@/application/notes";
 import { createCategoriesStore } from "@/application/categories";
+import { createAgentTeamStore } from "@/application/agent-team";
 
 /** 全局唯一的任务用例 store。 */
 export const useTasksStore = createTasksStore(new HttpTaskRepository());
@@ -21,3 +23,6 @@ export const useNotesStore = createNotesStore(new HttpNoteRepository());
 
 /** 全局唯一的分类用例 store。 */
 export const useCategoriesStore = createCategoriesStore(new HttpCategoryRepository());
+
+/** 全局唯一的多 Agent 团队用例 store。 */
+export const useAgentTeamStore = createAgentTeamStore(new HttpAgentTeamRepository());
