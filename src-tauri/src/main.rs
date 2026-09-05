@@ -1,11 +1,15 @@
-//! CLI entry point for the Tauri application.
+//! CLI entry point for the Tauri application。
 //!
-//! Simply delegates to [`lib::run`], which starts both the embedded Axum HTTP
-//! server and the Tauri event loop.
+//! 支持 `--export-types` 标志生成前端共享 TypeScript 类型文件。
 
-// Prevents additional console window on Windows in release builds.
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+use std::env;
 
 fn main() {
+    let args: Vec<String> = env::args().collect();
+    if args.contains(&"--export-types".to_string()) {
+        axum_tauri_vue_app_lib::specta_export::export_types()
+            .expect("类型导出失败");
+        return;
+    }
     axum_tauri_vue_app_lib::run();
 }

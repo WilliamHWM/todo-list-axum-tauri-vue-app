@@ -2,7 +2,7 @@
  * 多 Agent 协作团队：领域类型与角色/产物元数据。
  *
  * 这些是后端 `src-tauri/src/agents/` 子系统的前端镜像（手动维护，因为该子系统
- * 暂未纳入 typeshare 生成）。字段命名与后端 camelCase 序列化保持一致。
+ * 暂未纳入 specta 生成）。字段命名与后端 camelCase 序列化保持一致。
  */
 
 export type AgentRole =

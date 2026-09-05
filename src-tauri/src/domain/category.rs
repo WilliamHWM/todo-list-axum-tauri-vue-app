@@ -7,15 +7,14 @@
 use crate::domain::error::DomainError;
 use crate::shared::time;
 use serde::Serialize;
-use typeshare::typeshare;
+use specta::Type;
 use uuid::Uuid;
 
 /// 分类名称最大长度（字符数）。
 pub const NAME_MAX_LEN: usize = 40;
 
 /// 分类聚合：名称 + 展示色 + 创建时间。
-#[typeshare]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Type, Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Category {
     id: String,

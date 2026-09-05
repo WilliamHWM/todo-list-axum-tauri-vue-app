@@ -14,11 +14,10 @@ use crate::domain::category::Category;
 use crate::domain::note::Note;
 use crate::domain::task::Task;
 use serde::{Deserialize, Serialize};
-use typeshare::typeshare;
+use specta::Type;
 
 /// 任务列表查询条件（全部可选，仅出现的条件参与过滤/排序/分页）。
-#[typeshare]
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Type, Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskQuery {
     pub keyword: Option<String>,
@@ -30,8 +29,7 @@ pub struct TaskQuery {
 }
 
 /// 分页后的任务列表。
-#[typeshare]
-#[derive(Debug, Clone, Serialize)]
+#[derive(Type, Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskList {
     pub items: Vec<Task>,

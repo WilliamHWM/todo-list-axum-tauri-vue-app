@@ -99,8 +99,8 @@ bun tauri build              # 全量发布：打包成可安装的应用
 > 💡 开发时的分工：`bun tauri dev` 会先执行 `vite`（见 [tauri.conf.json](./src-tauri/tauri.conf.json)
 > 的 `beforeDevCommand`），然后编译 Rust 并启动窗口。窗口里加载 `http://localhost:1420`
 > （Vite 端口）。热更新时，改前端秒级生效，改 Rust 会重新编译后端。
-> `bun tauri dev` / `bun tauri build` 启动前还会先跑 typeshare，把后端
-> `#[typeshare]` 结构体重新生成为 `src/domain/generated.ts`，保证前端类型最新。
+> `bun tauri dev` / `bun tauri build` 启动前还会先跑 `cargo run -- --export-types`，把后端
+> `#[derive(Type)]` 结构体重新生成为 `src/domain/generated.ts`，保证前端类型最新。
 
 ### 3.3 环境变量配置
 

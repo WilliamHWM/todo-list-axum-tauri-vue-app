@@ -15,10 +15,10 @@ bun tauri dev            # Run dev server with hot reload (opens desktop window)
 bun run dev                  # Vite frontend only (browser preview)
 bun run build                # Type-check (vue-tsc) + build frontend
 bun run preview              # Preview built frontend
-bun run types:generate       # Manually regenerate shared types from Rust (typeshare → src/domain/generated.ts)
+bun run types:generate       # 手动从 Rust 生成共享类型（specta → src/domain/generated.ts）
 ```
 
-> Note: `bun tauri dev` / `bun tauri build` chain `typeshare` generation before the Tauri CLI (see the `tauri` script in package.json), so shared types are always fresh when starting dev or building.
+> Note: `bun tauri dev` / `bun tauri build` chain `specta` type generation before the Tauri CLI (see the `tauri` script in package.json), so shared types are always fresh when starting dev or building.
 
 **Rust:**
 ```bash
@@ -69,14 +69,12 @@ Key conventions:
 - **No `validator` crate**: validation lives in the domain entities (`Task::new`,
   `Task::update`, `Note::new`, `Note::update`) via `try_*`-style constructors/actions.
   Frontend mirrors the same rules with `validateTaskTitle`/`validateNoteContent`.
-- **Shared types (typeshare)**: shared data carriers (DTOs, `Task`/`Note`,
-  `TaskQuery`/`TaskList`) carry `#[typeshare]` on the backend and are generated into
-  `src/domain/generated.ts` via `bun run types:generate` (also chained before
+- **Shared types (specta)**: shared data carriers (DTOs, `Task`/`Note`,
+  `TaskQuery`/`TaskList`) carry `#[derive(Type)]` on the backend and are generated into
+  `src/domain/generated.ts` via `cargo run -- --export-types` (also chained before
   `bun tauri dev`/`bun tauri build`). Frontend re-exports from
-  `./generated`; never hand-edit `generated.ts`. typeshare rejects `i64`/`u64`/
-  `usize`/`isize` (use `i32` for pagination/counts). For `Option<T>` fields that
-  should be omitted (not `null`) on the wire — matching the generated `?:` type —
-  add `#[serde(skip_serializing_if = "Option::is_none")]` on the backend.
+  `./generated`; never hand-edit `generated.ts`. specta handles `i32`/`i64`/
+  `usize` uniformly. For `Option<T>` fields, specta generates `?:` types automatically.
 
 ### Data Flow
 
@@ -116,7 +114,7 @@ Key insight: Axum binds to a random local port (`127.0.0.1:0`), Tauri captures t
 | Frontend | `src/main.ts` | App entry: mounts Pinia, Router, Element Plus, icons |
 | Frontend | `src/shared/di.ts` | Frontend composition root: injects HTTP repos into store factories |
 | Frontend | `src/shared/format.ts` | UTC → local time formatting (dayjs) |
-| Frontend | `src/domain/` | Entities (`task.ts`/`note.ts` + validators), repository interfaces (`repository.ts`), typeshare snapshot (`generated.ts`) |
+| Frontend | `src/domain/` | Entities (`task.ts`/`note.ts` + validators), repository interfaces (`repository.ts`), specta snapshot (`generated.ts`) |
 | Frontend | `src/application/tasks.ts`, `notes.ts` | Pinia store factories: all list/CRUD use-case logic |
 | Frontend | `src/south/http.ts` | axios instance, port discovery, envelope unwrap, `ApiError` |
 | Frontend | `src/south/task-repository.ts`, `note-repository.ts` | HTTP adapters implementing domain ports |

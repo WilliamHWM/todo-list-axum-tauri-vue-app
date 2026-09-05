@@ -12,7 +12,7 @@
 | 层 | 技术 |
 |----|------|
 | 桌面壳 | Tauri 2 (WebView + Rust 运行时) |
-| 后端 | Rust + Axum 0.7 + SQLx + SQLite + typeshare + reqwest |
+| 后端 | Rust + Axum 0.7 + SQLx + SQLite + specta + reqwest |
 | 前端 | Vue 3 + TypeScript + Vite + Pinia + Vue Router + Element Plus + highlight.js + markdown-it |
 | 时间库 | chrono (Rust) / dayjs (前端) |
 | 附加 | `@tauri-apps/plugin-opener`（文件打开能力） |
@@ -92,7 +92,7 @@ bun tauri dev                # 开发模式（热重载 + 桌面窗口）；启�
 ```bash
 bun run build                # 前端类型检查 + 打包（vue-tsc + vite）
 bun run dev                  # 仅前端（浏览器预览，无 Tauri）
-bun run types:generate       # 手动重新生成共享类型（typeshare）
+bun run types:generate       # 手动重新生成共享类型（specta）
 cd src-tauri && cargo check  # Rust 类型检查
 cd src-tauri && cargo test   # Rust 单元/集成测试（含迁移与 API 契约测试）
 bun tauri build              # 全量发布构建（前端 + 打包安装包）
@@ -176,16 +176,16 @@ AGENT_LLM=openai OPENAI_API_KEY=sk-... OPENAI_MODEL=gpt-4o-mini bun tauri dev
 - **前端**：`AgentTeamView.vue` 为主界面，`RunResult.vue` 展示运行结果，`TaskAgentRuns.vue` 展示任务关联运行，`ArtifactContent.vue` 渲染产物内容
 - **架构**：`src-tauri/src/agents/` 内自成菱形（domain/application/north/south），前端 `domain/agent-team.ts` / `application/agent-team.ts` / `south/agent-team-repository.ts` 同样遵循菱形
 
-## 类型共享（typeshare）
+## 类型共享（specta）
 
-前后端共享的数据载体类型（DTO、`Task`/`Note`/`Category` 实体、`TaskQuery`/`TaskList`）由 [typeshare](https://github.com/1Password/typeshare) 从后端 Rust 结构体生成，前端 `src/domain/generated.ts` 是共享契约的"快照"：
+前后端共享的数据载体类型（DTO、`Task`/`Note`/`Category` 实体、`TaskQuery`/`TaskList`）由 [specta](https://github.com/specta-rs/specta) 从后端 Rust 结构体生成，前端 `src/domain/generated.ts` 是共享契约的"快照"：
 
-- 后端在结构体上加 `#[typeshare]`（见 `application/dto.rs`、`domain/`）。
-- 改结构体后自动重新生成：`bun tauri dev` / `bun tauri build` 启动前都会先跑 typeshare；也可手动执行 `bun run types:generate`（需安装 `typeshare-cli`：`cargo install typeshare-cli --locked`）。
+- 后端在结构体上加 `#[derive(Type)]`（见 `application/dto.rs`、`domain/`）。
+- 改结构体后自动重新生成：`bun tauri dev` / `bun tauri build` 启动前都会先跑 `cargo run -- --export-types`；也可手动执行 `bun run types:generate`。
 - **不要手改 `generated.ts`**；前端实体文件（`domain/task.ts`、`note.ts`、`category.ts`）从 `./generated` re-export 类型，并保留常量与校验函数。
-- 注意：typeshare 不接受 `i64`/`u64`/`usize`/`isize`，分页/计数等用 `i32`（JSON 行为不变）。
-- 序列化约定：`Option<T>` 字段如不希望以 `null` 出现在 JSON（与生成的 `?:` 类型不符），在后端加 `#[serde(skip_serializing_if = "Option::is_none")]`。
-- 多 Agent 子系统的前端类型（`agent-team.ts`）暂未纳入 typeshare 生成，为手动维护，字段命名与后端 camelCase 序列化保持一致。
+- specta 原生支持 `i32`/`i64`/`usize` 等类型，无需特殊处理。
+- `Option<T>` 字段自动生成 `?:` 可选类型。
+- 多 Agent 子系统的前端类型（`agent-team.ts`）暂未纳入 specta 生成，为手动维护，字段命名与后端 camelCase 序列化保持一致。
 
 ## 数据与迁移
 

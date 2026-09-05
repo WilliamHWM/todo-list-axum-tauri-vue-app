@@ -23,6 +23,7 @@ mod domain;
 mod north;
 mod shared;
 mod south;
+pub mod specta_export;
 
 use std::sync::Arc;
 use tauri::Manager;

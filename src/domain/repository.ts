@@ -5,7 +5,7 @@
  * `south/`，由组合根注入。
  *
  * 数据载体类型（`Task` / `Note` / `TaskQuery` / `TaskList` / DTO）全部来自
- * `./generated.ts`（typeshare 从后端 Rust 结构体生成），保证前后端契约一致；
+ * `./generated.ts`（specta 从后端 Rust 结构体生成），保证前后端契约一致；
  * 本文件只保留"端口接口"这一类前端专属抽象。
  */
 
@@ -27,19 +27,19 @@ export type { Task } from "./task";
 export type { Note } from "./note";
 export type { Category } from "./generated";
 
-/** `PUT /api/tasks/:id` 的请求体（由 typeshare 从 `UpdateTaskDto` 生成）。 */
+/** `PUT /api/tasks/:id` 的请求体（由 specta 从 `UpdateTaskDto` 生成）。 */
 export type UpdateTaskInput = UpdateTaskDto;
 
-/** `POST /api/notes` 的请求体（由 typeshare 从 `CreateNoteDto` 生成）。 */
+/** `POST /api/notes` 的请求体（由 specta 从 `CreateNoteDto` 生成）。 */
 export type CreateNoteInput = CreateNoteDto;
 
-/** `PUT /api/notes/:id` 的请求体（由 typeshare 从 `UpdateNoteDto` 生成）。 */
+/** `PUT /api/notes/:id` 的请求体（由 specta 从 `UpdateNoteDto` 生成）。 */
 export type UpdateNoteInput = UpdateNoteDto;
 
-/** `POST /api/categories` 的请求体（由 typeshare 从 `CreateCategoryDto` 生成）。 */
+/** `POST /api/categories` 的请求体（由 specta 从 `CreateCategoryDto` 生成）。 */
 export type CreateCategoryInput = CreateCategoryDto;
 
-/** `PUT /api/categories/:id` 的请求体（由 typeshare 从 `UpdateCategoryDto` 生成）。 */
+/** `PUT /api/categories/:id` 的请求体（由 specta 从 `UpdateCategoryDto` 生成）。 */
 export type UpdateCategoryInput = UpdateCategoryDto;
 
 /** 任务仓储端口。 */

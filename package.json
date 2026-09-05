@@ -8,8 +8,8 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tauri": "typeshare --lang=typescript --output-file=src/domain/generated.ts src-tauri/src && tauri",
-    "types:generate": "typeshare --lang=typescript --output-file=src/domain/generated.ts src-tauri/src"
+    "tauri": "bun run types:generate && tauri",
+    "types:generate": "cd src-tauri && cargo run -- --export-types"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
